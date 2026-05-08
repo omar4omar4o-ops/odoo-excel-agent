@@ -1,0 +1,40 @@
+# Python/cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Build artifacts
+.build-venv/
+build/
+dist/
+release/
+*.spec.bak
+
+# Local runtime/config/secrets
+config.json
+runtime_status.json
+state.json
+agent.log
+*.log
+*.tmp
+*.bak
+*.backup*
+
+# Excel/private workbooks
+excel/
+*.xlsx
+*.xlsm
+*.xls
+~$*
+
+# Packaged binaries are published as GitHub Release assets, not committed.
+OdooExcelAgent.exe
+OdooExcelAgent-Windows.zip
+
+# Editor/OS
+.trae/
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini

@@ -1,0 +1,46 @@
+{
+  "version": 3,
+  "odoo": {
+    "url": "https://sphe.cloudoo.ma",
+    "db": "sphe.cloudoo.ma",
+    "login": "user@example.com",
+    "credential_target": "OdooExcelAgent:example123456",
+    "record_url_example": ""
+  },
+  "manual": {
+    "last_file": ""
+  },
+  "background": {
+    "watch_mode": "selected_workbooks",
+    "performance_mode": "silent",
+    "achats_local_file": "",
+    "achats_etranger_file": "",
+    "seller_previous_file": "",
+    "watch_file": "",
+    "watch_folder": "%USERPROFILE%\\Downloads",
+    "recursive": false,
+    "process_existing_on_start": false,
+    "update_open_workbook": false,
+    "excel_event_monitoring": false,
+    "excel_session_backend": "pywin32",
+    "excel_save_debounce_seconds": 1,
+    "allow_live_update_with_autosave": false,
+    "visible_excel": false,
+    "write_report_file": false,
+    "stable_backup_name": true,
+    "settle_seconds": 15,
+    "retry_delay_seconds": 45
+  },
+  "paths": {
+    "backup_dir": "%LOCALAPPDATA%\\OdooExcelAgent\\backups",
+    "report_dir": "%LOCALAPPDATA%\\OdooExcelAgent\\reports",
+    "state_file": "%LOCALAPPDATA%\\OdooExcelAgent\\state.json",
+    "log_file": "%LOCALAPPDATA%\\OdooExcelAgent\\agent.log",
+    "runtime_status_file": "%LOCALAPPDATA%\\OdooExcelAgent\\runtime_status.json"
+  },
+  "updates": {
+    "manifest_url": "",
+    "last_checked_at": "",
+    "last_seen_version": ""
+  }
+}
