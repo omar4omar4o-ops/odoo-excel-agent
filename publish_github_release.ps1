@@ -54,7 +54,13 @@ if (-not (Test-Path -LiteralPath ".git")) {
     git branch -M main
 }
 
-if (-not (git remote get-url origin 2>$null)) {
+$hasOrigin = $false
+$remoteNames = @(git remote)
+if ($remoteNames -contains "origin") {
+    $hasOrigin = $true
+}
+
+if (-not $hasOrigin) {
     $visibilityFlag = if ($Visibility -eq "public") { "--public" } else { "--private" }
     $existing = $true
     & gh repo view $repoFullName | Out-Null
