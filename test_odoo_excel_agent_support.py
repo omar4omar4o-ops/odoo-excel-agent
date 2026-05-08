@@ -49,14 +49,15 @@ class OdooExcelAgentSupportTests(unittest.TestCase):
             config_path = temp_path / "config.json"
             config_path.write_text(json.dumps(raw), encoding="utf-8")
 
-            normalized, _ = load_normalized_config(config_path)
+            normalized, messages = load_normalized_config(config_path)
 
         background = normalized["background"]
         self.assertEqual(background["performance_mode"], PERFORMANCE_MODE_SILENT)
         self.assertFalse(background["update_open_workbook"])
         self.assertFalse(background["excel_event_monitoring"])
         self.assertFalse(background["allow_live_update_with_autosave"])
-        self.assertEqual(background["excel_session_backend"], "xlwings")
+        self.assertEqual(background["excel_session_backend"], "pywin32")
+        self.assertTrue(any("xlwings" in message for message in messages))
 
     def test_live_mode_preserves_live_options_on_load(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -79,6 +80,32 @@ class OdooExcelAgentSupportTests(unittest.TestCase):
         self.assertTrue(background["update_open_workbook"])
         self.assertTrue(background["excel_event_monitoring"])
         self.assertTrue(background["allow_live_update_with_autosave"])
+        self.assertEqual(background["excel_session_backend"], "pywin32")
+
+    def test_legacy_xlwings_backend_never_survives_normalization(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_path = Path(tmpdir)
+            raw = {
+                "background": {
+                    "performance_mode": PERFORMANCE_MODE_LIVE,
+                    "update_open_workbook": True,
+                    "excel_event_monitoring": True,
+                    "allow_live_update_with_autosave": True,
+                    "excel_session_backend": "xlwings",
+                }
+            }
+            config_path = temp_path / "config.json"
+            config_path.write_text(json.dumps(raw), encoding="utf-8")
+
+            normalized, messages = load_normalized_config(config_path)
+
+        background = normalized["background"]
+        self.assertEqual(background["performance_mode"], PERFORMANCE_MODE_LIVE)
+        self.assertTrue(background["update_open_workbook"])
+        self.assertTrue(background["excel_event_monitoring"])
+        self.assertTrue(background["allow_live_update_with_autosave"])
+        self.assertEqual(background["excel_session_backend"], "pywin32")
+        self.assertTrue(any("xlwings" in message for message in messages))
 
     def test_load_normalized_config_migrates_legacy_local_watch_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

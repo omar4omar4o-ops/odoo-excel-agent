@@ -52,6 +52,7 @@ from odoo_excel_agent_support import (
     get_runtime_status_path,
     load_normalized_config,
     make_credential_target,
+    normalize_excel_session_backend,
     read_runtime_status,
     read_secret,
     save_normalized_config,
@@ -624,7 +625,7 @@ class AgentControlApp:
         self.excel_backend_menu = ctk.CTkOptionMenu(
             backend_row,
             variable=self.excel_session_backend_var,
-            values=["xlwings", "pywin32"],
+            values=[DEFAULT_EXCEL_SESSION_BACKEND],
             fg_color=p["card_alt"],
             button_color=p["accent"],
             button_hover_color=p["accent_deep"],
@@ -1054,7 +1055,9 @@ class AgentControlApp:
         config["background"]["process_existing_on_start"] = self.process_existing_var.get() == "1"
         config["background"]["update_open_workbook"] = live_mode and self.update_open_workbook_var.get() == "1"
         config["background"]["excel_event_monitoring"] = live_mode and self.excel_event_monitoring_var.get() == "1"
-        config["background"]["excel_session_backend"] = self.excel_session_backend_var.get().strip() or DEFAULT_EXCEL_SESSION_BACKEND
+        config["background"]["excel_session_backend"] = normalize_excel_session_backend(
+            self.excel_session_backend_var.get()
+        )
         config["background"]["excel_save_debounce_seconds"] = int(
             self.excel_save_debounce_var.get().strip() or str(DEFAULT_EXCEL_SAVE_DEBOUNCE_SECONDS)
         )
@@ -1092,7 +1095,7 @@ class AgentControlApp:
         self.process_existing_var.set("1" if background.get("process_existing_on_start", False) else "0")
         self.update_open_workbook_var.set("1" if background.get("update_open_workbook", False) else "0")
         self.excel_event_monitoring_var.set("1" if background.get("excel_event_monitoring", False) else "0")
-        self.excel_session_backend_var.set(str(background.get("excel_session_backend") or DEFAULT_EXCEL_SESSION_BACKEND))
+        self.excel_session_backend_var.set(normalize_excel_session_backend(background.get("excel_session_backend")))
         self.excel_save_debounce_var.set(str(background.get("excel_save_debounce_seconds", DEFAULT_EXCEL_SAVE_DEBOUNCE_SECONDS)))
         self.allow_live_update_with_autosave_var.set("1" if background.get("allow_live_update_with_autosave", False) else "0")
         self.recursive_var.set("1" if background.get("recursive", False) else "0")
@@ -1193,12 +1196,9 @@ class AgentControlApp:
             missing.append("watchdog")
         if importlib.util.find_spec("openpyxl") is None:
             missing.append("openpyxl")
-        if (
-            self.performance_mode_var.get().strip().casefold() == PERFORMANCE_MODE_LIVE
-            and (self.excel_session_backend_var.get().strip() or DEFAULT_EXCEL_SESSION_BACKEND) == "xlwings"
-        ):
-            if importlib.util.find_spec("xlwings") is None:
-                missing.append("xlwings")
+        current_backend = self.excel_session_backend_var.get().strip().casefold()
+        if normalize_excel_session_backend(current_backend) != current_backend:
+            self.excel_session_backend_var.set(DEFAULT_EXCEL_SESSION_BACKEND)
         if missing:
             raise RuntimeError(
                 "Missing Python packages: "
@@ -1453,7 +1453,7 @@ class AgentControlApp:
                     apply=True,
                     visible_excel=self.visible_excel_var.get() == "1",
                     allow_open_workbook_update=self.update_open_workbook_var.get() == "1",
-                    excel_session_backend=self.excel_session_backend_var.get().strip() or DEFAULT_EXCEL_SESSION_BACKEND,
+                    excel_session_backend=normalize_excel_session_backend(self.excel_session_backend_var.get()),
                     excel_save_debounce_seconds=int(
                         self.excel_save_debounce_var.get().strip() or str(DEFAULT_EXCEL_SAVE_DEBOUNCE_SECONDS)
                     ),

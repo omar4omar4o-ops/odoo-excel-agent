@@ -28,7 +28,7 @@ Important:
     URL: https://sphe.cloudoo.ma
     Database: sphe.cloudoo.ma
 - For normal .xlsx/.xlsm processing, the agent runs in Silent mode and does not open Excel.
-- Microsoft Excel desktop is required only for legacy .xls files or Advanced Live mode.
+- Microsoft Excel desktop is required only for legacy .xls files or Advanced Live mode; Advanced Live uses pywin32, not xlwings.
 - Internet access to the Odoo server is required.
 - If Windows SmartScreen appears, use "More info" then "Run anyway".
 

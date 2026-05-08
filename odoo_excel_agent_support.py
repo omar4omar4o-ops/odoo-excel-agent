@@ -23,7 +23,7 @@ from link_odoo_vendor_bills import (
 
 APP_NAME = "Odoo Excel Agent"
 APP_DIR_NAME = "OdooExcelAgent"
-APP_VERSION = "2026.05.08.6"
+APP_VERSION = "2026.05.08.7"
 DEFAULT_UPDATE_URL = "https://api.github.com/repos/omar4omar4o-ops/odoo-excel-agent/releases/latest"
 AGENT_SCRIPT = "odoo_excel_background.py"
 UI_SCRIPT = "odoo_excel_agent_ui.py"
@@ -38,6 +38,7 @@ WATCH_MODE_ACHATS_PAIR = "achats_pair"
 WATCH_MODE_FILE = "file"
 WATCH_MODE_FOLDER = "folder"
 PERFORMANCE_MODES = {PERFORMANCE_MODE_SILENT, PERFORMANCE_MODE_LIVE}
+SUPPORTED_EXCEL_SESSION_BACKEND = "pywin32"
 SELECTED_WORKBOOK_KEYS = (
     "achats_local_file",
     "achats_etranger_file",
@@ -163,6 +164,17 @@ def normalize_performance_mode(raw_value: Any) -> str:
     return PERFORMANCE_MODE_SILENT
 
 
+def normalize_excel_session_backend(raw_value: Any, messages: list[str] | None = None) -> str:
+    value = str(raw_value or "").strip().casefold()
+    if value == "xlwings":
+        if messages is not None:
+            messages.append("Migrated legacy xlwings Excel backend to pywin32.")
+        return SUPPORTED_EXCEL_SESSION_BACKEND
+    if value and value != SUPPORTED_EXCEL_SESSION_BACKEND and messages is not None:
+        messages.append(f"Unsupported Excel backend '{value}' was reset to pywin32.")
+    return SUPPORTED_EXCEL_SESSION_BACKEND
+
+
 def achats_slot_for_path(raw_value: Any) -> str:
     value = str(raw_value or "").strip()
     if not value:
@@ -201,7 +213,7 @@ def default_config(install_dir: Path) -> dict[str, Any]:
             "process_existing_on_start": False,
             "update_open_workbook": False,
             "excel_event_monitoring": False,
-            "excel_session_backend": "pywin32",
+            "excel_session_backend": SUPPORTED_EXCEL_SESSION_BACKEND,
             "excel_save_debounce_seconds": DEFAULT_EXCEL_SAVE_DEBOUNCE_SECONDS,
             "allow_live_update_with_autosave": False,
             "visible_excel": False,
@@ -244,6 +256,7 @@ def load_normalized_config(config_path: Path) -> tuple[dict[str, Any], list[str]
     achats_etranger_file = normalize_optional_path(background_raw.get("achats_etranger_file"))
     seller_previous_file = normalize_optional_path(background_raw.get("seller_previous_file"))
     has_selected_config = bool(achats_local_file or achats_etranger_file or seller_previous_file)
+    excel_session_backend = normalize_excel_session_backend(background_raw.get("excel_session_backend"), messages)
     performance_mode = normalize_performance_mode(background_raw.get("performance_mode"))
     live_mode = performance_mode == PERFORMANCE_MODE_LIVE
 
@@ -320,11 +333,7 @@ def load_normalized_config(config_path: Path) -> tuple[dict[str, Any], list[str]
             background_raw.get("update_open_workbook", processing_raw.get("update_open_workbook", False))
         ) if live_mode else False,
         "excel_event_monitoring": bool(background_raw.get("excel_event_monitoring", False)) if live_mode else False,
-        "excel_session_backend": (
-            "xlwings"
-            if str(background_raw.get("excel_session_backend") or "").strip().casefold() == "xlwings"
-            else "pywin32"
-        ),
+        "excel_session_backend": excel_session_backend,
         "excel_save_debounce_seconds": int(
             background_raw.get(
                 "excel_save_debounce_seconds",

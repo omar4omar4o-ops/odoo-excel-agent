@@ -63,7 +63,7 @@ if ($remoteNames -contains "origin") {
 if (-not $hasOrigin) {
     $visibilityFlag = if ($Visibility -eq "public") { "--public" } else { "--private" }
     $existing = $true
-    & gh repo view $repoFullName | Out-Null
+    & gh repo view $repoFullName 2>$null | Out-Null
     if ($LASTEXITCODE -ne 0) {
         $existing = $false
     }
@@ -96,7 +96,7 @@ $assetPaths = @(
 )
 
 $existingRelease = $true
-& gh release view $releaseTag --repo $repoFullName | Out-Null
+& gh release view $releaseTag --repo $repoFullName 2>$null | Out-Null
 if ($LASTEXITCODE -ne 0) {
     $existingRelease = $false
 }

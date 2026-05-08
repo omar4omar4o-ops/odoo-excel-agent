@@ -13,6 +13,14 @@ $bundleDir = Join-Path $releaseRoot "OdooExcelAgent-Windows"
 $zipPath = Join-Path $releaseRoot "OdooExcelAgent-Windows.zip"
 $manifestPath = Join-Path $releaseRoot "update-manifest.json"
 
+$bundleExePath = Join-Path $bundleDir "OdooExcelAgent.exe"
+if (Test-Path -LiteralPath $bundleExePath) {
+    $resolvedBundleExe = (Resolve-Path -LiteralPath $bundleExePath).Path
+    Get-CimInstance Win32_Process |
+        Where-Object { $_.ExecutablePath -eq $resolvedBundleExe } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+}
+
 if (Test-Path -LiteralPath $bundleDir) {
     Remove-Item -Recurse -Force $bundleDir
 }

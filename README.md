@@ -9,6 +9,7 @@ Windows desktop agent that links selected Excel workbooks to Odoo purchase order
 - ACHATS ETRANGER lookup using only `MTT DE FACTURE`.
 - Seller / previous workbook keeps the legacy lookup flow.
 - Writes hyperlinks to closed `.xlsx/.xlsm` files with `openpyxl`.
+- Uses `pywin32` for the optional advanced live/fallback path; `xlwings` is not required.
 - Keeps API keys in Windows Credential Manager.
 - Supports free updates from GitHub Releases.
 
