@@ -23,7 +23,8 @@ from link_odoo_vendor_bills import (
 
 APP_NAME = "Odoo Excel Agent"
 APP_DIR_NAME = "OdooExcelAgent"
-APP_VERSION = "2026.05.08.5"
+APP_VERSION = "2026.05.08.6"
+DEFAULT_UPDATE_URL = "https://api.github.com/repos/omar4omar4o-ops/odoo-excel-agent/releases/latest"
 AGENT_SCRIPT = "odoo_excel_background.py"
 UI_SCRIPT = "odoo_excel_agent_ui.py"
 STARTUP_SHORTCUT = Path(os.getenv("APPDATA", str(Path.home()))) / "Microsoft/Windows/Start Menu/Programs/Startup/Odoo Excel Agent.lnk"
@@ -210,7 +211,7 @@ def default_config(install_dir: Path) -> dict[str, Any]:
             "retry_delay_seconds": DEFAULT_RETRY_DELAY_SECONDS,
         },
         "updates": {
-            "manifest_url": "",
+            "manifest_url": DEFAULT_UPDATE_URL,
             "last_checked_at": "",
             "last_seen_version": "",
         },
@@ -347,7 +348,7 @@ def load_normalized_config(config_path: Path) -> tuple[dict[str, Any], list[str]
         "runtime_status_file": str(expand_path(runtime_status_file or config["paths"]["runtime_status_file"])),
     }
     config["updates"] = {
-        "manifest_url": str(updates_raw.get("manifest_url") or "").strip(),
+        "manifest_url": str(updates_raw.get("manifest_url") or DEFAULT_UPDATE_URL).strip(),
         "last_checked_at": str(updates_raw.get("last_checked_at") or "").strip(),
         "last_seen_version": str(updates_raw.get("last_seen_version") or "").strip(),
     }

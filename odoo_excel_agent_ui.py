@@ -40,6 +40,7 @@ from odoo_excel_agent_support import (
     AGENT_SCRIPT,
     APP_NAME,
     APP_VERSION,
+    DEFAULT_UPDATE_URL,
     DEFAULT_INSTALL_DIR,
     STARTUP_SHORTCUT,
     AgentCredentialError,
@@ -271,9 +272,9 @@ class AgentControlApp:
         self.config_summary_var = StringVar(value="Configuration file location will appear here.")
         self.last_activity_var = StringVar(value="Activity console is ready.")
         self.activity_count_var = StringVar(value="0 events logged")
-        self.update_manifest_url_var = StringVar()
+        self.update_manifest_url_var = StringVar(value=DEFAULT_UPDATE_URL)
         self.update_state_var = StringVar(value=f"Current version: {APP_VERSION}")
-        self.update_detail_var = StringVar(value="Paste a free HTTPS manifest URL or GitHub Releases API URL.")
+        self.update_detail_var = StringVar(value="Updates are configured automatically from GitHub Releases.")
         self._last_update_info: UpdateInfo | None = None
 
         self.process_existing_var = StringVar(value="0")
@@ -653,7 +654,7 @@ class AgentControlApp:
         self._add_section_header(
             update_card,
             "Free Updates",
-            "Use GitHub Releases API directly, or a JSON manifest hosted on any HTTPS file host.",
+            "Updates are automatic from the official GitHub Release. Advanced users can override the URL.",
         )
         self._add_entry_row(
             update_card,
@@ -669,7 +670,7 @@ class AgentControlApp:
         buttons = ctk.CTkFrame(update_card, fg_color="transparent")
         buttons.pack(fill="x", padx=14, pady=(0, 14))
         ctk.CTkButton(buttons, text="Check For Updates", width=150, height=34, fg_color=p["card_alt"], hover_color=p["hover"], text_color=p["ink"], border_width=1, border_color=p["border"], command=self.check_for_updates).pack(side=LEFT)
-        ctk.CTkButton(buttons, text="Install Update", width=140, height=34, fg_color=p["accent"], hover_color=p["accent_deep"], text_color="#ffffff", command=self.install_update).pack(side=LEFT, padx=(8, 0))
+        ctk.CTkButton(buttons, text="Update Now", width=140, height=34, fg_color=p["accent"], hover_color=p["accent_deep"], text_color="#ffffff", command=self.install_update).pack(side=LEFT, padx=(8, 0))
 
         guide = self._create_card(parent, row=0, column=1, style_name="CardAlt.TFrame")
         self._add_section_header(guide, "Safe Update Rules", "The updater is intentionally simple and verifiable.", alt=True)
@@ -1065,7 +1066,7 @@ class AgentControlApp:
         config["background"]["retry_delay_seconds"] = int(self.retry_seconds_var.get().strip() or "45")
         config["paths"]["backup_dir"] = self._normalized_backup_dir()
         existing_updates = self.config.get("updates", {}) if isinstance(self.config.get("updates"), dict) else {}
-        config["updates"]["manifest_url"] = self.update_manifest_url_var.get().strip()
+        config["updates"]["manifest_url"] = self._update_manifest_url()
         config["updates"]["last_checked_at"] = str(existing_updates.get("last_checked_at") or "")
         config["updates"]["last_seen_version"] = str(existing_updates.get("last_seen_version") or "")
         return config
@@ -1101,7 +1102,7 @@ class AgentControlApp:
         self.settle_seconds_var.set(str(background.get("settle_seconds", 15)))
         self.retry_seconds_var.set(str(background.get("retry_delay_seconds", 45)))
         updates = config.get("updates", {}) if isinstance(config.get("updates"), dict) else {}
-        self.update_manifest_url_var.set(str(updates.get("manifest_url") or ""))
+        self.update_manifest_url_var.set(str(updates.get("manifest_url") or DEFAULT_UPDATE_URL))
         last_seen = str(updates.get("last_seen_version") or "").strip()
         if last_seen:
             self.update_state_var.set(f"Current: {APP_VERSION} · Latest seen: {last_seen}")
@@ -1349,12 +1350,17 @@ class AgentControlApp:
         save_normalized_config(self._config_file_path(), config)
         self.config = config
 
+    def _update_manifest_url(self) -> str:
+        value = self.update_manifest_url_var.get().strip()
+        if not value:
+            value = DEFAULT_UPDATE_URL
+            self.update_manifest_url_var.set(value)
+        return value
+
     def check_for_updates(self) -> None:
         def work() -> None:
             try:
-                manifest_url = self.update_manifest_url_var.get().strip()
-                if not manifest_url:
-                    raise ValueError("Paste an update manifest URL first.")
+                manifest_url = self._update_manifest_url()
                 self.append_status("Checking for updates...")
                 info = check_for_update(manifest_url, APP_VERSION)
                 self._last_update_info = info
@@ -1383,10 +1389,8 @@ class AgentControlApp:
                 if not getattr(sys, "frozen", False):
                     raise RuntimeError("Automatic install is available only in the packaged OdooExcelAgent.exe.")
                 info = self._last_update_info
-                manifest_url = self.update_manifest_url_var.get().strip()
+                manifest_url = self._update_manifest_url()
                 if info is None:
-                    if not manifest_url:
-                        raise ValueError("Paste an update manifest URL first.")
                     self.append_status("Checking for updates before install...")
                     info = check_for_update(manifest_url, APP_VERSION)
                     self._last_update_info = info

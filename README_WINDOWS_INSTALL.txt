@@ -44,5 +44,5 @@ Free updates:
 - Option B: upload OdooExcelAgent-Windows.zip and update-manifest.json to a GitHub Release, then paste the manifest URL.
 - Optional before building: set ODOO_EXCEL_AGENT_UPDATE_BASE_URL to your GitHub Release download URL so update-manifest.json contains final URLs.
   Example: https://github.com/USER/REPO/releases/download/v2026.05.08.5
-- In the app, open the Update tab and paste the manifest URL.
+- In the app, open the Update tab and click Update Now. The official GitHub URL is preconfigured.
 - The updater verifies SHA-256 when the manifest contains it, keeps config/credentials, replaces the EXE after closing, then reopens the app.

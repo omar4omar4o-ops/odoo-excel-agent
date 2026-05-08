@@ -26,7 +26,7 @@ Use the packaged release bundle:
 
 The app can update itself from a GitHub Release:
 
-- Use this URL pattern in the app's `Update` tab:
+- The app now includes the official update URL automatically. If you need to reset it, use:
   `https://api.github.com/repos/OWNER/REPO/releases/latest`
 - The release must contain `OdooExcelAgent-Windows.zip`.
 - If `update-manifest.json` is also uploaded, the app can verify SHA-256 before installing.

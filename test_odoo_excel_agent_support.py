@@ -10,6 +10,7 @@ from link_odoo_vendor_bills import (
     PERFORMANCE_MODE_SILENT,
 )
 from odoo_excel_agent_support import (
+    DEFAULT_UPDATE_URL,
     WATCH_MODE_SELECTED_WORKBOOKS,
     WATCH_MODE_FILE,
     default_config,
@@ -31,6 +32,7 @@ class OdooExcelAgentSupportTests(unittest.TestCase):
         self.assertFalse(config["background"]["excel_event_monitoring"])
         self.assertFalse(config["background"]["allow_live_update_with_autosave"])
         self.assertEqual(config["background"]["excel_session_backend"], "pywin32")
+        self.assertEqual(config["updates"]["manifest_url"], DEFAULT_UPDATE_URL)
 
     def test_silent_mode_forces_live_options_off_on_load(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

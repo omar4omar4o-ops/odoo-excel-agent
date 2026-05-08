@@ -39,7 +39,7 @@
     "runtime_status_file": "%LOCALAPPDATA%\\OdooExcelAgent\\runtime_status.json"
   },
   "updates": {
-    "manifest_url": "",
+    "manifest_url": "https://api.github.com/repos/omar4omar4o-ops/odoo-excel-agent/releases/latest",
     "last_checked_at": "",
     "last_seen_version": ""
   }
