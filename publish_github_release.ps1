@@ -19,6 +19,19 @@ function Require-Command {
     return $cmd.Source
 }
 
+function Test-GhCommand {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+    $previousErrorAction = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & gh @Arguments *> $null
+        return $LASTEXITCODE -eq 0
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+}
+
 Require-Command git | Out-Null
 Require-Command gh | Out-Null
 
@@ -62,11 +75,7 @@ if ($remoteNames -contains "origin") {
 
 if (-not $hasOrigin) {
     $visibilityFlag = if ($Visibility -eq "public") { "--public" } else { "--private" }
-    $existing = $true
-    & gh repo view $repoFullName 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        $existing = $false
-    }
+    $existing = Test-GhCommand @("repo", "view", $repoFullName)
     if (-not $existing) {
         & gh repo create $repoFullName $visibilityFlag --source . --remote origin --disable-wiki --disable-issues
     }
@@ -95,11 +104,7 @@ $assetPaths = @(
     ".\OdooExcelAgent.exe"
 )
 
-$existingRelease = $true
-& gh release view $releaseTag --repo $repoFullName 2>$null | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    $existingRelease = $false
-}
+$existingRelease = Test-GhCommand @("release", "view", $releaseTag, "--repo", $repoFullName)
 
 if (-not $existingRelease) {
     & gh release create $releaseTag @assetPaths --repo $repoFullName --title "Odoo Excel Agent $version" --notes "Windows release for Odoo Excel Agent $version." --latest
