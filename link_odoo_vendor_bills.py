@@ -482,6 +482,7 @@ def _achats_etranger_workbook_rule() -> WorkbookRule:
     return WorkbookRule(
         header_groups=(frozenset(ETRANGER_HEADER_VARIANTS),),
         lookup_mode=LOOKUP_MODE_COMMAND_REF,
+        global_search_on_not_found=True,
         workbook_label="ACHATS ETRANGER",
         required_header_examples=("N COMMANDE",),
     )
@@ -2229,6 +2230,19 @@ def resolve_orders(
             for ref, result in global_contains.items():
                 if result.status == "linked":
                     results[ref] = result
+        for ref in unique:
+            result = results.get(ref)
+            if result is None or result.status != "not_found":
+                continue
+            note = str(result.note or "")
+            if "Reference not found in Odoo purchase orders" in note:
+                results[ref] = replace(
+                    result,
+                    note=(
+                        "Reference not found in Odoo purchase orders or other accessible "
+                        "Odoo records after the global search fallback."
+                    ),
+                )
     return results
 
 

@@ -570,7 +570,7 @@ class AgentControlApp:
             "Reads workbook-specific columns (N\u00b0FACTURE, N COMMANDE, or legacy headers).",
             "ACHATS LOCAL tries N\u00b0FACTURE first, then N commandes if the first value is not found.",
             "If ACHATS LOCAL is not found in purchase orders, it runs a fast priority search in accessible Odoo records.",
-            "ACHATS ETRANGER searches Odoo from N COMMANDE, not the amount.",
+            "ACHATS ETRANGER searches from N COMMANDE and falls back to the same fast global Odoo search when purchase orders are not enough.",
             "Uses workbook-specific lookup rules (Reference commande with partner_ref fallback, or legacy partner_ref).",
             "Silent mode waits for open workbooks to close before writing.",
             "Writes .xlsx/.xlsm hyperlinks with direct OOXML patching and stores original snapshots in a hidden backup subfolder.",

@@ -1,6 +1,8 @@
 ﻿import unittest
 import xmlrpc.client
 from pathlib import Path
+from unittest.mock import patch
+from typing import Any
 from zipfile import ZipFile
 
 try:
@@ -71,12 +73,14 @@ class RuleSelectionTests(unittest.TestCase):
         rule = workbook_rule_for_path(Path(r"C:\tmp\TRACKING ACHATS ETRANGER (1).xlsx"))
         self.assertEqual(rule.lookup_mode, LOOKUP_MODE_COMMAND_REF)
         self.assertEqual(rule.headers, LOCAL_COMMAND_HEADER_VARIANTS)
+        self.assertTrue(rule.global_search_on_not_found)
 
     def test_etranger_slot_forces_n_commande_lookup_for_renamed_workbook(self) -> None:
         rule = workbook_rule_for_slot(WORKBOOK_SLOT_ACHATS_ETRANGER, Path(r"C:\tmp\Renamed Copy.xlsx"))
         self.assertEqual(rule.lookup_mode, LOOKUP_MODE_COMMAND_REF)
         self.assertEqual(rule.headers, LOCAL_COMMAND_HEADER_VARIANTS)
         self.assertFalse(rule.row_fallback_on_not_found)
+        self.assertTrue(rule.global_search_on_not_found)
 
     def test_other_workbooks_keep_legacy_lookup(self) -> None:
         rule = workbook_rule_for_path(Path(r"C:\tmp\Anything Else.xlsx"))
@@ -303,6 +307,61 @@ class ResolveModeTests(unittest.TestCase):
         self.assertEqual(results["FA2026000045"].status, "linked")
         self.assertEqual(results["FA2026000045"].source_model, "account.move")
         self.assertNotIn(("ir.model", "search_read"), client.calls)
+
+    def test_etranger_n_commande_can_fallback_to_global_search(self) -> None:
+        client = GlobalSearchFakeClient()
+        results = resolve_orders(
+            ["FA2026000045"],
+            client,  # type: ignore[arg-type]
+            lookup_mode=LOOKUP_MODE_COMMAND_REF,
+            global_search_on_not_found=workbook_rule_for_slot(
+                WORKBOOK_SLOT_ACHATS_ETRANGER,
+                Path(r"C:\tmp\TRACKING ACHATS ETRANGER (1).xlsx"),
+            ).global_search_on_not_found,
+        )
+        self.assertEqual(results["FA2026000045"].status, "linked")
+        self.assertEqual(results["FA2026000045"].source_model, "account.move")
+
+    def test_global_fallback_updates_not_found_note_when_everything_fails(self) -> None:
+        class AlwaysMissingClient(OdooClient):
+            def __init__(self, url: str = "https://sphe.cloudoo.ma", db: str = "db", login: str = "login", api_key: str = "key") -> None:
+                super().__init__(url, db, login, api_key)
+                self.models_proxy = object()
+
+            def authenticate(self) -> int:
+                self.uid = 1
+                return 1
+
+            def search_purchase_orders_by_exact_values(self, field_name: str, values: list[str]) -> list[dict]:
+                return []
+
+            def search_purchase_orders_by_name(self, ref: str, operator: str) -> list[dict]:
+                return []
+
+            def search_purchase_orders_by_partner_ref(self, ref: str, operator: str) -> list[dict]:
+                return []
+
+            def execute_models(self, model: str, method: str, args: list | None = None, kwargs: dict | None = None) -> Any:
+                if model == "ir.model":
+                    return [{"model": "account.move", "name": "Journal Entry"}]
+                if method == "fields_get":
+                    return {"ref": {"type": "char", "searchable": True}}
+                if method == "search_read":
+                    return []
+                if method == "check_access_rights":
+                    return True
+                raise AssertionError(f"Unexpected call: {model}.{method}")
+
+        with patch("link_odoo_vendor_bills.OdooClient", AlwaysMissingClient):
+            client = AlwaysMissingClient()
+            results = resolve_orders(
+                ["NO-SUCH-REF"],
+                client,
+                lookup_mode=LOOKUP_MODE_COMMAND_REF,
+                global_search_on_not_found=True,
+            )
+        self.assertEqual(results["NO-SUCH-REF"].status, "not_found")
+        self.assertIn("other accessible Odoo records", results["NO-SUCH-REF"].note)
 
 
 class OdooSettingsValidationTests(unittest.TestCase):
@@ -648,4 +707,3 @@ class BackupLayoutTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
