@@ -19,8 +19,12 @@ from link_odoo_vendor_bills import (
     PurchaseLinkResult,
     WORKBOOK_SLOT_ACHATS_ETRANGER,
     WorkbookOrderCell,
+    _GLOBAL_SEARCH_FIELDS_CACHE,
     apply_links_to_workbook,
+    build_odoo_record_url,
     explain_odoo_exception,
+    resolve_global_exact_refs,
+    resolve_orders,
     scan_workbook_orders_from_file,
     select_cells_for_results,
     validate_odoo_settings,
@@ -53,6 +57,7 @@ class RuleSelectionTests(unittest.TestCase):
         self.assertEqual(rule.lookup_mode, LOOKUP_MODE_COMMAND_REF)
         self.assertEqual(rule.headers, LOCAL_HEADER_VARIANTS | LOCAL_COMMAND_HEADER_VARIANTS)
         self.assertTrue(rule.row_fallback_on_not_found)
+        self.assertTrue(rule.global_search_on_not_found)
 
     def test_etranger_workbook_uses_n_commande_lookup(self) -> None:
         rule = workbook_rule_for_path(Path(r"C:\tmp\TRACKING ACHATS ETRANGER (1).xlsx"))
@@ -156,7 +161,46 @@ class FailingTotalClient(OdooClient):
         raise RuntimeError("Odoo is temporarily overloaded")
 
 
+class GlobalSearchFakeClient:
+    def __init__(self) -> None:
+        self.url = "https://sphe.cloudoo.ma"
+        self.db = "db"
+        self.login = "login"
+        self.api_key = "key"
+        self.calls: list[tuple[str, str]] = []
+
+    def _call(self, model: str, method: str, args: list, kwargs: dict | None = None) -> object:
+        self.calls.append((model, method))
+        if model == "ir.model":
+            raise RuntimeError("Access denied to ir.model")
+        if method == "check_access_rights":
+            return model == "account.move"
+        if method == "fields_get":
+            return {
+                "ref": {"type": "char", "searchable": True},
+                "payment_reference": {"type": "char", "searchable": True},
+                "display_name": {"type": "char", "searchable": True},
+                "amount_total": {"type": "float", "searchable": True},
+            }
+        if method == "search_read":
+            domain_text = str(args[0])
+            if "FA2026000045" in domain_text:
+                return [
+                    {
+                        "id": 2310,
+                        "display_name": "FACT/2026/0045",
+                        "ref": "FA2026000045",
+                        "payment_reference": False,
+                    }
+                ]
+            return []
+        raise AssertionError(f"Unexpected Odoo call: {model}.{method}")
+
+
 class ResolveModeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        _GLOBAL_SEARCH_FIELDS_CACHE.clear()
+
     def test_command_ref_lookup_uses_name(self) -> None:
         client = CommandRefClient()
         result = client.resolve_purchase_ref("PO000", lookup_mode=LOOKUP_MODE_COMMAND_REF)
@@ -219,6 +263,37 @@ class ResolveModeTests(unittest.TestCase):
         client = FailingTotalClient()
         with self.assertRaisesRegex(RuntimeError, "temporarily overloaded"):
             client.resolve_purchase_ref("8753.76", lookup_mode=LOOKUP_MODE_TOTAL_AMOUNT)
+
+    def test_build_odoo_record_url_uses_purchase_shortcut_and_generic_form_url(self) -> None:
+        self.assertEqual(
+            build_odoo_record_url("https://sphe.cloudoo.ma", "purchase.order", 66),
+            "https://sphe.cloudoo.ma/odoo/purchase/66",
+        )
+        self.assertEqual(
+            build_odoo_record_url("https://sphe.cloudoo.ma", "account.move", 2310),
+            "https://sphe.cloudoo.ma/web#id=2310&model=account.move&view_type=form",
+        )
+
+    def test_global_exact_search_finds_account_move_reference(self) -> None:
+        client = GlobalSearchFakeClient()
+        results = resolve_global_exact_refs(["FA2026000045"], client)  # type: ignore[arg-type]
+        result = results["FA2026000045"]
+        self.assertEqual(result.status, "linked")
+        self.assertEqual(result.source_model, "account.move")
+        self.assertEqual(result.matched_field, "global_exact:account.move.ref")
+        self.assertEqual(result.record_id, 2310)
+        self.assertEqual(result.url, "https://sphe.cloudoo.ma/web#id=2310&model=account.move&view_type=form")
+
+    def test_resolve_orders_can_fallback_to_global_search(self) -> None:
+        client = GlobalSearchFakeClient()
+        results = resolve_orders(
+            ["FA2026000045"],
+            client,  # type: ignore[arg-type]
+            lookup_mode=LOOKUP_MODE_COMMAND_REF,
+            global_search_on_not_found=True,
+        )
+        self.assertEqual(results["FA2026000045"].status, "linked")
+        self.assertEqual(results["FA2026000045"].source_model, "account.move")
 
 
 class OdooSettingsValidationTests(unittest.TestCase):

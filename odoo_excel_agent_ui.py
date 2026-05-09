@@ -568,6 +568,7 @@ class AgentControlApp:
         guide_points = (
             "Reads workbook-specific columns (N\u00b0FACTURE, N COMMANDE, or legacy headers).",
             "ACHATS LOCAL tries N\u00b0FACTURE first, then N commandes if the first value is not found.",
+            "If ACHATS LOCAL is not found in purchase orders, it searches accessible Odoo records globally.",
             "ACHATS ETRANGER searches Odoo from N COMMANDE, not the amount.",
             "Uses workbook-specific lookup rules (Reference commande with partner_ref fallback, or legacy partner_ref).",
             "Silent mode waits for open workbooks to close before writing.",

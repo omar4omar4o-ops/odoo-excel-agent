@@ -9,6 +9,7 @@ __pycache__/
 build/
 dist/
 release/
+analysis_reports/
 *.spec.bak
 
 # Local runtime/config/secrets

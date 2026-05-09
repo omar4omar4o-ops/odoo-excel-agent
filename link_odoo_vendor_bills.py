@@ -64,12 +64,17 @@ ETRANGER_WORKBOOK_FILE_NAME = "tracking achats etranger (1).xlsx"
 LOOKUP_MODE_PARTNER_REF = "partner_ref"
 LOOKUP_MODE_COMMAND_REF = "command_ref"
 LOOKUP_MODE_TOTAL_AMOUNT = "total_amount"
+LOOKUP_MODE_GLOBAL_TEXT = "global_text"
 WORKBOOK_SLOT_ACHATS_LOCAL = "achats_local"
 WORKBOOK_SLOT_ACHATS_ETRANGER = "achats_etranger"
 WORKBOOK_SLOT_SELLER_PREVIOUS = "seller_previous"
 DEFAULT_AMOUNT_TOLERANCES = (0.01, 0.05, 0.50)
 ODOO_RPC_MAX_ATTEMPTS = 3
 ODOO_RPC_RETRY_BASE_SECONDS = 0.75
+GLOBAL_SEARCH_FIELD_GROUP_SIZE = 7
+GLOBAL_SEARCH_REF_CHUNK_SIZE = 80
+GLOBAL_SEARCH_RECORD_LIMIT = 500
+GLOBAL_SEARCH_CONTAINS_LIMIT = 5
 
 # Normalized header sets used by the ACHATS and seller workflows.
 LOCAL_HEADER_VARIANTS = {"n\u00b0facture", "n\u00b0 facture", "nfacture", "n facture"}
@@ -89,6 +94,49 @@ PURCHASE_ORDER_FIELDS = [
     "name", "partner_ref", "partner_id", "state", "date_order",
     "amount_total", "origin",
 ]
+
+GENERIC_RECORD_FIELDS = ["display_name"]
+GLOBAL_SEARCH_TEXT_TYPES = {"char", "text", "html", "selection", "reference"}
+GLOBAL_SEARCH_EXCLUDED_FIELDS = {
+    "access_token",
+    "activity_type_icon",
+    "website_url",
+}
+GLOBAL_SEARCH_MODEL_CANDIDATES = [
+    "purchase.order", "purchase.order.line", "purchase.requisition", "purchase.requisition.line",
+    "account.move", "account.move.line", "account.payment", "account.payment.register",
+    "account.bank.statement", "account.bank.statement.line", "account.analytic.line",
+    "sale.order", "sale.order.line", "sale.subscription", "sale.subscription.line",
+    "stock.picking", "stock.move", "stock.move.line", "stock.lot", "stock.quant",
+    "stock.valuation.layer", "stock.scrap", "stock.warehouse.orderpoint", "stock.warehouse",
+    "stock.location", "product.template", "product.product", "product.supplierinfo",
+    "product.category", "product.pricelist", "product.pricelist.item", "res.partner",
+    "res.company", "res.users", "res.country", "res.currency", "crm.lead", "project.project",
+    "project.task", "helpdesk.ticket", "maintenance.request", "maintenance.equipment",
+    "fleet.vehicle", "fleet.vehicle.log.services", "mrp.production", "mrp.workorder",
+    "mrp.bom", "mrp.bom.line", "repair.order", "repair.line", "documents.document",
+    "document.document", "ir.attachment", "mail.message", "mail.activity", "mail.followers",
+    "calendar.event", "hr.expense", "hr.expense.sheet", "hr.employee", "hr.department",
+    "account.journal", "account.account", "account.tax", "account.full.reconcile",
+    "account.partial.reconcile", "account.payment.term", "account.incoterms",
+    "account.edi.document", "uom.uom", "uom.category", "delivery.carrier", "website.sale.order",
+    "pos.order", "pos.order.line", "pos.payment", "quality.check", "quality.alert",
+    "quality.point", "sign.request", "sign.request.item",
+]
+GLOBAL_SEARCH_PRIORITY_FIELDS = {
+    "account.move": ("ref", "payment_reference", "name", "display_name", "invoice_origin", "x_studio_n_dossier"),
+    "purchase.order": ("partner_ref", "name", "display_name", "origin", "x_studio_n_dossier", "x_studio_description_dossier"),
+    "account.move.line": ("ref", "move_name", "name", "display_name", "invoice_origin", "matching_number"),
+    "stock.picking": ("origin", "name", "display_name", "carrier_tracking_ref"),
+    "stock.move": ("origin", "reference", "name", "display_name"),
+    "sale.order": ("client_order_ref", "name", "display_name", "origin", "reference"),
+    "ir.attachment": ("display_name", "name", "res_model"),
+}
+GLOBAL_SEARCH_MODEL_ORDER = tuple(dict.fromkeys(
+    list(GLOBAL_SEARCH_PRIORITY_FIELDS)
+    + GLOBAL_SEARCH_MODEL_CANDIDATES
+))
+_GLOBAL_SEARCH_FIELDS_CACHE: dict[tuple[str, str, str], dict[str, list[str]]] = {}
 
 REPORT_COLUMNS = (
     "sheet", "cell", "reference", "status", "source_model",
@@ -131,6 +179,7 @@ class WorkbookRule:
     header_groups: tuple[frozenset[str], ...]
     lookup_mode: str = LOOKUP_MODE_PARTNER_REF
     row_fallback_on_not_found: bool = False
+    global_search_on_not_found: bool = False
     workbook_label: str = "Workbook"
     required_header_examples: tuple[str, ...] = ()
 
@@ -246,6 +295,15 @@ def normalize_odoo_url(value: Any) -> str:
             normalized += path
         return normalized
     return raw.rstrip("/")
+
+
+def build_odoo_record_url(base_url: str, model: str, record_id: int | str) -> str:
+    normalized_base = normalize_odoo_url(base_url).rstrip("/")
+    normalized_model = str(model or "").strip()
+    if normalized_model == "purchase.order":
+        return f"{normalized_base}/odoo/purchase/{record_id}"
+    query = urlencode({"id": record_id, "model": normalized_model, "view_type": "form"})
+    return f"{normalized_base}/web#{query}"
 
 
 def validate_odoo_settings(
@@ -365,6 +423,7 @@ def _achats_local_workbook_rule() -> WorkbookRule:
         ),
         lookup_mode=LOOKUP_MODE_COMMAND_REF,
         row_fallback_on_not_found=True,
+        global_search_on_not_found=True,
         workbook_label="ACHATS LOCAL",
         required_header_examples=("N°FACTURE", "N commandes"),
     )
@@ -808,7 +867,7 @@ class OdooClient:
             state=str(best.get("state") or ""),
             vendor=many2one_name(best.get("partner_id")),
             amount=float(best.get("amount_total") or 0),
-            url=f"{self.url}/odoo/purchase/{po_id}",
+            url=build_odoo_record_url(self.url, "purchase.order", po_id),
             note=f"Matched purchase order via {matched_field}.",
         )
 
@@ -1570,9 +1629,16 @@ def resolve_orders(
     client: OdooClient,
     lookup_mode: str = LOOKUP_MODE_PARTNER_REF,
     url_builder: Any = None,
+    global_search_on_not_found: bool = False,
 ) -> dict[str, PurchaseLinkResult]:
     unique = list(dict.fromkeys(ref_values))
     results = resolve_orders_exact_batch(unique, client, lookup_mode)
+
+    if global_search_on_not_found:
+        missing_after_exact = [ref for ref in unique if ref not in results]
+        if missing_after_exact:
+            results.update(resolve_global_exact_refs(missing_after_exact, client))
+
     remaining = [ref for ref in unique if ref not in results]
     thread_local = threading.local()
 
@@ -1594,6 +1660,17 @@ def resolve_orders(
         for future in as_completed(futures):
             ref, result = future.result()
             results[ref] = result
+
+    if global_search_on_not_found:
+        unresolved = [
+            ref for ref in unique
+            if results.get(ref, PurchaseLinkResult(status="not_found")).status == "not_found"
+        ]
+        if unresolved:
+            global_contains = resolve_global_contains_refs(unresolved, client)
+            for ref, result in global_contains.items():
+                if result.status == "linked":
+                    results[ref] = result
     return results
 
 
@@ -1612,6 +1689,8 @@ def resolve_orders_exact_batch(
         return _resolve_amounts_exact_batch(ref_values, client)
     if lookup_mode == LOOKUP_MODE_PARTNER_REF:
         return _resolve_text_refs_exact_batch(ref_values, client, "partner_ref")
+    if lookup_mode == LOOKUP_MODE_GLOBAL_TEXT:
+        return resolve_global_exact_refs(ref_values, client)
     return {}
 
 
@@ -1682,6 +1761,335 @@ def _resolve_amounts_exact_batch(ref_values: list[str], client: OdooClient) -> d
             matched_field="exact:amount_total",
             ref_value=str(best.get("amount_total") or ""),
         )
+    return results
+
+
+def _global_search_cache_key(client: OdooClient) -> tuple[str, str, str]:
+    return (
+        normalize_odoo_url(getattr(client, "url", "")),
+        str(getattr(client, "db", "") or ""),
+        str(getattr(client, "login", "") or ""),
+    )
+
+
+def _is_skippable_global_search_error(exc: Exception) -> bool:
+    message = str(exc).casefold()
+    transient_markers = (
+        "temporarily overloaded",
+        "connection slots",
+        "connection reset",
+        "connection refused",
+        "connection timed out",
+        "network error",
+        "bad gateway",
+        "gateway timeout",
+        "service unavailable",
+    )
+    return not any(marker in message for marker in transient_markers)
+
+
+def _global_model_candidates(client: OdooClient) -> list[str]:
+    try:
+        models = client._call(
+            "ir.model",
+            "search_read",
+            [[]],
+            {"fields": ["model", "transient"], "limit": 10000, "order": "model asc"},
+        )
+    except Exception:
+        return list(GLOBAL_SEARCH_MODEL_ORDER)
+    candidates: list[str] = []
+    for item in models:
+        if item.get("transient"):
+            continue
+        model = str(item.get("model") or "").strip()
+        if model:
+            candidates.append(model)
+    return list(dict.fromkeys(list(GLOBAL_SEARCH_MODEL_ORDER) + candidates))
+
+
+def _order_global_fields(model: str, fields: list[str]) -> list[str]:
+    known = set(fields)
+    priority = [field for field in GLOBAL_SEARCH_PRIORITY_FIELDS.get(model, ()) if field in known]
+    rest = [field for field in fields if field not in priority]
+    rest.sort(
+        key=lambda field: (
+            0 if any(token in field.casefold() for token in ("ref", "name", "origin", "number", "invoice", "facture", "x_studio")) else 1,
+            field,
+        )
+    )
+    return priority + rest
+
+
+def _global_search_model_fields(client: OdooClient) -> dict[str, list[str]]:
+    cache_key = _global_search_cache_key(client)
+    cached = _GLOBAL_SEARCH_FIELDS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    model_fields: dict[str, list[str]] = {}
+    for model in _global_model_candidates(client):
+        try:
+            has_access = client._call(model, "check_access_rights", ["read"], {"raise_exception": False})
+        except Exception as exc:
+            if not _is_skippable_global_search_error(exc):
+                raise
+            continue
+        if not has_access:
+            continue
+        try:
+            fields = client._call(
+                model,
+                "fields_get",
+                [],
+                {"attributes": ["string", "type", "searchable", "store"]},
+            )
+        except Exception as exc:
+            if not _is_skippable_global_search_error(exc):
+                raise
+            continue
+        selected = [
+            field_name
+            for field_name, metadata in fields.items()
+            if metadata.get("searchable", True)
+            and metadata.get("type") in GLOBAL_SEARCH_TEXT_TYPES
+            and field_name not in GLOBAL_SEARCH_EXCLUDED_FIELDS
+        ]
+        if selected:
+            model_fields[model] = _order_global_fields(model, selected)
+    _GLOBAL_SEARCH_FIELDS_CACHE[cache_key] = model_fields
+    return model_fields
+
+
+def _chunks(values: list[Any], size: int) -> list[list[Any]]:
+    return [values[index:index + size] for index in range(0, len(values), size)]
+
+
+def _or_domain(field_names: list[str], operator: str, value: Any) -> list[Any]:
+    conditions = [(field_name, operator, value) for field_name in field_names]
+    if len(conditions) <= 1:
+        return conditions
+    return ["|"] * (len(conditions) - 1) + conditions
+
+
+def _record_text_value(value: Any) -> str:
+    if value is False or value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        if len(value) >= 2:
+            return str(value[1] or "")
+        if value:
+            return str(value[0] or "")
+        return ""
+    return str(value)
+
+
+def _global_result(
+    *,
+    client: OdooClient,
+    model: str,
+    record: dict[str, Any],
+    field_name: str,
+    field_value: str,
+    match_type: str,
+    query: str,
+) -> PurchaseLinkResult:
+    record_id = int(record.get("id") or 0)
+    display_name = str(record.get("display_name") or record.get("name") or "")
+    matched_field = f"global_{match_type}:{model}.{field_name}"
+    return PurchaseLinkResult(
+        status="linked",
+        source_model=model,
+        matched_field=matched_field,
+        record_id=record_id,
+        record_name=display_name,
+        ref_value=field_value,
+        url=build_odoo_record_url(client.url, model, record_id),
+        note=f"Matched by global Odoo search via {matched_field} using '{query}'.",
+    )
+
+
+def _find_exact_global_matches(
+    refs_by_key: dict[str, str],
+    record: dict[str, Any],
+    fields: list[str],
+) -> list[tuple[str, str, str]]:
+    matches: list[tuple[str, str, str]] = []
+    for field_name in fields:
+        value = _record_text_value(record.get(field_name)).strip()
+        if not value:
+            continue
+        ref = refs_by_key.get(value.casefold())
+        if ref:
+            matches.append((ref, field_name, value))
+    return matches
+
+
+def _find_contains_global_match(
+    query: str,
+    record: dict[str, Any],
+    fields: list[str],
+) -> tuple[str, str] | None:
+    folded = query.casefold()
+    for field_name in fields:
+        value = _record_text_value(record.get(field_name)).strip()
+        if value and folded in value.casefold():
+            return field_name, value
+    return None
+
+
+def _ref_variants(ref: str) -> list[str]:
+    raw = normalize_order(ref)
+    candidates = [
+        raw,
+        raw.replace(" ", ""),
+        re.sub(r"[\s\-_/]+", "", raw),
+        re.sub(r"\W+", "", raw),
+    ]
+    variants: list[str] = []
+    for candidate in candidates:
+        candidate = candidate.strip()
+        if len(candidate) >= 2 and candidate not in variants:
+            variants.append(candidate)
+    return variants
+
+
+def _search_global_exact_field_group(
+    client: OdooClient,
+    model: str,
+    field_group: list[str],
+    refs: list[str],
+) -> list[dict[str, Any]]:
+    read_fields = list(dict.fromkeys(GENERIC_RECORD_FIELDS + field_group))
+    return client._call(
+        model,
+        "search_read",
+        [_or_domain(field_group, "in", refs)],
+        {
+            "fields": read_fields,
+            "limit": max(GLOBAL_SEARCH_RECORD_LIMIT, len(refs) * 3),
+            "order": "id desc",
+        },
+    )
+
+
+def _search_global_contains_field_group(
+    client: OdooClient,
+    model: str,
+    field_group: list[str],
+    query: str,
+) -> list[dict[str, Any]]:
+    read_fields = list(dict.fromkeys(GENERIC_RECORD_FIELDS + field_group))
+    return client._call(
+        model,
+        "search_read",
+        [_or_domain(field_group, "ilike", query)],
+        {
+            "fields": read_fields,
+            "limit": GLOBAL_SEARCH_CONTAINS_LIMIT,
+            "order": "id desc",
+        },
+    )
+
+
+def resolve_global_exact_refs(
+    ref_values: list[str],
+    client: OdooClient,
+) -> dict[str, PurchaseLinkResult]:
+    refs = list(dict.fromkeys(normalize_order(ref) for ref in ref_values if normalize_order(ref)))
+    results: dict[str, PurchaseLinkResult] = {}
+    if not refs:
+        return results
+    refs_by_key = {ref.casefold(): ref for ref in refs}
+    model_fields = _global_search_model_fields(client)
+    for model, fields in model_fields.items():
+        unresolved = [ref for ref in refs if ref not in results]
+        if not unresolved:
+            break
+        for field_group in _chunks(fields, GLOBAL_SEARCH_FIELD_GROUP_SIZE):
+            for ref_chunk in _chunks(unresolved, GLOBAL_SEARCH_REF_CHUNK_SIZE):
+                try:
+                    records = _search_global_exact_field_group(client, model, field_group, ref_chunk)
+                except Exception as exc:
+                    if not _is_skippable_global_search_error(exc):
+                        raise
+                    for field_name in field_group:
+                        try:
+                            records = _search_global_exact_field_group(client, model, [field_name], ref_chunk)
+                        except Exception as field_exc:
+                            if not _is_skippable_global_search_error(field_exc):
+                                raise
+                            continue
+                        for record in records:
+                            for ref, matched_field, value in _find_exact_global_matches(refs_by_key, record, [field_name]):
+                                if ref not in results:
+                                    results[ref] = _global_result(
+                                        client=client,
+                                        model=model,
+                                        record=record,
+                                        field_name=matched_field,
+                                        field_value=value,
+                                        match_type="exact",
+                                        query=ref,
+                                    )
+                    continue
+                for record in records:
+                    for ref, matched_field, value in _find_exact_global_matches(refs_by_key, record, field_group):
+                        if ref not in results:
+                            results[ref] = _global_result(
+                                client=client,
+                                model=model,
+                                record=record,
+                                field_name=matched_field,
+                                field_value=value,
+                                match_type="exact",
+                                query=ref,
+                            )
+    return results
+
+
+def resolve_global_contains_refs(
+    ref_values: list[str],
+    client: OdooClient,
+) -> dict[str, PurchaseLinkResult]:
+    refs = list(dict.fromkeys(normalize_order(ref) for ref in ref_values if normalize_order(ref)))
+    results: dict[str, PurchaseLinkResult] = {}
+    if not refs:
+        return results
+    model_fields = _global_search_model_fields(client)
+    for ref in refs:
+        for query in _ref_variants(ref):
+            found = False
+            for model, fields in model_fields.items():
+                for field_group in _chunks(fields, GLOBAL_SEARCH_FIELD_GROUP_SIZE):
+                    try:
+                        records = _search_global_contains_field_group(client, model, field_group, query)
+                    except Exception as exc:
+                        if not _is_skippable_global_search_error(exc):
+                            raise
+                        continue
+                    for record in records:
+                        match = _find_contains_global_match(query, record, field_group)
+                        if match is None:
+                            continue
+                        field_name, value = match
+                        results[ref] = _global_result(
+                            client=client,
+                            model=model,
+                            record=record,
+                            field_name=field_name,
+                            field_value=value,
+                            match_type="contains",
+                            query=query,
+                        )
+                        found = True
+                        break
+                    if found:
+                        break
+                if found:
+                    break
+            if found:
+                break
     return results
 
 
@@ -1833,6 +2241,7 @@ def process_workbook(
             unique_refs,
             client,
             lookup_mode=workbook_rule.lookup_mode,
+            global_search_on_not_found=workbook_rule.global_search_on_not_found,
         )
         selected_cells = select_cells_for_results(cells, results, workbook_rule)
         selected_counts = selected_status_counts(selected_cells, results, scan_result)
