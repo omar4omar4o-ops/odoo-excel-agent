@@ -5,10 +5,10 @@ Windows desktop agent that links selected Excel workbooks to Odoo purchase order
 ## Main Features
 
 - Silent background monitoring for selected Excel workbooks.
-- ACHATS LOCAL lookup with row fallback: `N°FACTURE` then `N commandes`, then global search across accessible Odoo records when purchase-order lookup fails.
+- ACHATS LOCAL lookup with row fallback: `N°FACTURE` then `N commandes`, then fast priority search across accessible Odoo records when purchase-order lookup fails.
 - ACHATS ETRANGER lookup using `N COMMANDE`.
 - Seller / previous workbook keeps the legacy lookup flow.
-- Writes hyperlinks to closed `.xlsx/.xlsm` files with `openpyxl`.
+- Writes hyperlinks to closed `.xlsx/.xlsm` files with a direct OOXML patcher that leaves Excel table XML untouched.
 - Uses `pywin32` for the optional advanced live/fallback path; `xlwings` is not required.
 - Keeps API keys in Windows Credential Manager.
 - Supports free updates from GitHub Releases.

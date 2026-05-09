@@ -568,11 +568,11 @@ class AgentControlApp:
         guide_points = (
             "Reads workbook-specific columns (N\u00b0FACTURE, N COMMANDE, or legacy headers).",
             "ACHATS LOCAL tries N\u00b0FACTURE first, then N commandes if the first value is not found.",
-            "If ACHATS LOCAL is not found in purchase orders, it searches accessible Odoo records globally.",
+            "If ACHATS LOCAL is not found in purchase orders, it runs a fast priority search in accessible Odoo records.",
             "ACHATS ETRANGER searches Odoo from N COMMANDE, not the amount.",
             "Uses workbook-specific lookup rules (Reference commande with partner_ref fallback, or legacy partner_ref).",
             "Silent mode waits for open workbooks to close before writing.",
-            "Creates a backup before writing hyperlinks.",
+            "Writes .xlsx/.xlsm hyperlinks with direct OOXML patching and creates a backup first.",
         )
         for text in guide_points:
             ctk.CTkLabel(guide, text=text, font=ctk.CTkFont(size=11), text_color=p["muted"], wraplength=380, justify="left").pack(anchor="w", padx=14, pady=3)

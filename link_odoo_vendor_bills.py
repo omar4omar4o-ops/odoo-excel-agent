@@ -15,11 +15,15 @@ import datetime as dt
 import getpass
 import hashlib
 import os
+import posixpath
 import re
 import shutil
 import sys
+import tempfile
 import threading
 import time
+import zipfile
+import xml.etree.ElementTree as ET
 import xmlrpc.client
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
@@ -75,6 +79,13 @@ GLOBAL_SEARCH_FIELD_GROUP_SIZE = 7
 GLOBAL_SEARCH_REF_CHUNK_SIZE = 80
 GLOBAL_SEARCH_RECORD_LIMIT = 500
 GLOBAL_SEARCH_CONTAINS_LIMIT = 5
+OOXML_MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+OOXML_DOC_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+OOXML_PACKAGE_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+OOXML_HYPERLINK_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
+
+ET.register_namespace("", OOXML_MAIN_NS)
+ET.register_namespace("r", OOXML_DOC_REL_NS)
 
 # Normalized header sets used by the ACHATS and seller workflows.
 LOCAL_HEADER_VARIANTS = {"n\u00b0facture", "n\u00b0 facture", "nfacture", "n facture"}
@@ -132,11 +143,26 @@ GLOBAL_SEARCH_PRIORITY_FIELDS = {
     "sale.order": ("client_order_ref", "name", "display_name", "origin", "reference"),
     "ir.attachment": ("display_name", "name", "res_model"),
 }
+GLOBAL_FAST_EXACT_FIELDS = {
+    "account.move": ("ref", "payment_reference", "name", "invoice_origin", "x_studio_n_dossier"),
+    "purchase.order": ("partner_ref", "name", "origin", "x_studio_n_dossier", "x_studio_description_dossier"),
+    "account.move.line": ("ref", "move_name", "name", "invoice_origin", "matching_number"),
+    "stock.picking": ("origin", "name", "carrier_tracking_ref"),
+    "stock.move": ("origin", "reference", "name"),
+    "ir.attachment": ("name", "display_name"),
+}
+GLOBAL_FAST_CONTAINS_FIELDS = {
+    "account.move": ("ref", "payment_reference", "display_name", "invoice_origin"),
+    "purchase.order": ("partner_ref", "name", "display_name", "origin"),
+    "ir.attachment": ("name", "display_name"),
+    "stock.picking": ("origin", "name", "carrier_tracking_ref"),
+}
 GLOBAL_SEARCH_MODEL_ORDER = tuple(dict.fromkeys(
     list(GLOBAL_SEARCH_PRIORITY_FIELDS)
     + GLOBAL_SEARCH_MODEL_CANDIDATES
 ))
 _GLOBAL_SEARCH_FIELDS_CACHE: dict[tuple[str, str, str], dict[str, list[str]]] = {}
+_GLOBAL_FAST_FIELDS_CACHE: dict[tuple[str, str, str, str], dict[str, list[str]]] = {}
 
 REPORT_COLUMNS = (
     "sheet", "cell", "reference", "status", "source_model",
@@ -1590,6 +1616,195 @@ def write_links_with_openpyxl(
         workbook.close()
 
 
+def _ooxml_qname(namespace: str, tag: str) -> str:
+    return f"{{{namespace}}}{tag}"
+
+
+def _ooxml_workbook_sheet_map(zip_file: zipfile.ZipFile) -> dict[str, str]:
+    workbook_root = ET.fromstring(zip_file.read("xl/workbook.xml"))
+    rels_root = ET.fromstring(zip_file.read("xl/_rels/workbook.xml.rels"))
+    rels: dict[str, str] = {}
+    for rel in rels_root.findall(_ooxml_qname(OOXML_PACKAGE_REL_NS, "Relationship")):
+        rel_id = str(rel.attrib.get("Id") or "")
+        target = str(rel.attrib.get("Target") or "")
+        if rel_id and target:
+            if target.startswith("/"):
+                rels[rel_id] = target.lstrip("/")
+            else:
+                rels[rel_id] = posixpath.normpath(posixpath.join("xl", target))
+
+    sheet_map: dict[str, str] = {}
+    for sheet in workbook_root.findall(f".//{_ooxml_qname(OOXML_MAIN_NS, 'sheet')}"):
+        sheet_name = str(sheet.attrib.get("name") or "")
+        rel_id = str(sheet.attrib.get(_ooxml_qname(OOXML_DOC_REL_NS, "id")) or "")
+        sheet_path = rels.get(rel_id)
+        if sheet_name and sheet_path:
+            sheet_map[sheet_name] = sheet_path
+    return sheet_map
+
+
+def _ooxml_sheet_rels_path(sheet_xml_path: str) -> str:
+    folder, filename = posixpath.split(sheet_xml_path)
+    return posixpath.join(folder, "_rels", f"{filename}.rels")
+
+
+def _ooxml_xml_bytes(root: ET.Element) -> bytes:
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+def _ooxml_next_relationship_id(rels_root: ET.Element) -> str:
+    max_id = 0
+    for rel in rels_root.findall(_ooxml_qname(OOXML_PACKAGE_REL_NS, "Relationship")):
+        rel_id = str(rel.attrib.get("Id") or "")
+        match = re.fullmatch(r"rId(\d+)", rel_id)
+        if match:
+            max_id = max(max_id, int(match.group(1)))
+    return f"rId{max_id + 1}"
+
+
+def _ooxml_hyperlinks_insert_index(sheet_root: ET.Element) -> int:
+    late_tags = {
+        "printOptions", "pageMargins", "pageSetup", "headerFooter",
+        "rowBreaks", "colBreaks", "customProperties", "cellWatches",
+        "ignoredErrors", "smartTags", "drawing", "legacyDrawing",
+        "legacyDrawingHF", "picture", "oleObjects", "controls",
+        "webPublishItems", "tableParts", "extLst",
+    }
+    for index, child in enumerate(list(sheet_root)):
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag in late_tags:
+            return index
+    return len(sheet_root)
+
+
+def _ooxml_ensure_hyperlinks(sheet_root: ET.Element) -> ET.Element:
+    hyperlinks = sheet_root.find(_ooxml_qname(OOXML_MAIN_NS, "hyperlinks"))
+    if hyperlinks is not None:
+        return hyperlinks
+    hyperlinks = ET.Element(_ooxml_qname(OOXML_MAIN_NS, "hyperlinks"))
+    sheet_root.insert(_ooxml_hyperlinks_insert_index(sheet_root), hyperlinks)
+    return hyperlinks
+
+
+def _ooxml_patch_sheet_hyperlinks(
+    sheet_xml: bytes,
+    rels_xml: bytes | None,
+    links_by_address: dict[str, str],
+) -> tuple[bytes, bytes]:
+    sheet_root = ET.fromstring(sheet_xml)
+    if rels_xml:
+        rels_root = ET.fromstring(rels_xml)
+    else:
+        rels_root = ET.Element(_ooxml_qname(OOXML_PACKAGE_REL_NS, "Relationships"))
+
+    hyperlinks = _ooxml_ensure_hyperlinks(sheet_root)
+    removed_relationship_ids: set[str] = set()
+    for link in list(hyperlinks):
+        ref = str(link.attrib.get("ref") or "")
+        if ref not in links_by_address:
+            continue
+        rel_id = str(link.attrib.get(_ooxml_qname(OOXML_DOC_REL_NS, "id")) or "")
+        if rel_id:
+            removed_relationship_ids.add(rel_id)
+        hyperlinks.remove(link)
+
+    for rel in list(rels_root):
+        if rel.attrib.get("Id") in removed_relationship_ids and rel.attrib.get("Type") == OOXML_HYPERLINK_REL_TYPE:
+            rels_root.remove(rel)
+
+    for address, target in links_by_address.items():
+        rel_id = _ooxml_next_relationship_id(rels_root)
+        ET.SubElement(
+            rels_root,
+            _ooxml_qname(OOXML_PACKAGE_REL_NS, "Relationship"),
+            {
+                "Id": rel_id,
+                "Type": OOXML_HYPERLINK_REL_TYPE,
+                "Target": target,
+                "TargetMode": "External",
+            },
+        )
+        ET.SubElement(
+            hyperlinks,
+            _ooxml_qname(OOXML_MAIN_NS, "hyperlink"),
+            {
+                "ref": address,
+                _ooxml_qname(OOXML_DOC_REL_NS, "id"): rel_id,
+            },
+        )
+
+    return _ooxml_xml_bytes(sheet_root), _ooxml_xml_bytes(rels_root)
+
+
+def _replace_ooxml_zip_entries(workbook_path: Path, replacements: dict[str, bytes]) -> None:
+    handle, temp_name = tempfile.mkstemp(
+        prefix=f"{workbook_path.stem}.",
+        suffix=".tmp",
+        dir=str(workbook_path.parent),
+    )
+    os.close(handle)
+    temp_path = Path(temp_name)
+    try:
+        with zipfile.ZipFile(workbook_path, "r") as source, zipfile.ZipFile(
+            temp_path,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+            compresslevel=6,
+        ) as target:
+            existing = {info.filename for info in source.infolist()}
+            for info in source.infolist():
+                payload = replacements.get(info.filename)
+                if payload is None:
+                    payload = source.read(info.filename)
+                target.writestr(info, payload)
+            for filename, payload in replacements.items():
+                if filename not in existing:
+                    target.writestr(filename, payload)
+        os.replace(temp_path, workbook_path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+def write_links_with_ooxml(
+    workbook_path: Path,
+    cells: list[WorkbookOrderCell],
+    results: dict[str, PurchaseLinkResult],
+) -> int:
+    links_by_sheet: dict[str, dict[str, str]] = {}
+    for cell_info in cells:
+        result = results.get(cell_info.order_name)
+        if result is None or result.status != "linked" or not result.url:
+            continue
+        links_by_sheet.setdefault(cell_info.sheet, {})[cell_info.address] = result.url
+    if not links_by_sheet:
+        return 0
+
+    count = 0
+    with zipfile.ZipFile(workbook_path, "r") as workbook_zip:
+        sheet_map = _ooxml_workbook_sheet_map(workbook_zip)
+        replacements: dict[str, bytes] = {}
+        for sheet_name, links_by_address in links_by_sheet.items():
+            sheet_xml_path = sheet_map.get(sheet_name)
+            if not sheet_xml_path:
+                continue
+            rels_path = _ooxml_sheet_rels_path(sheet_xml_path)
+            rels_xml = workbook_zip.read(rels_path) if rels_path in workbook_zip.namelist() else None
+            sheet_xml, new_rels_xml = _ooxml_patch_sheet_hyperlinks(
+                workbook_zip.read(sheet_xml_path),
+                rels_xml,
+                links_by_address,
+            )
+            replacements[sheet_xml_path] = sheet_xml
+            replacements[rels_path] = new_rels_xml
+            count += len(links_by_address)
+
+    if not replacements:
+        return 0
+    _replace_ooxml_zip_entries(workbook_path, replacements)
+    return count
+
+
 def write_links_with_live_workbook(
     access: WorkbookAccessContext, cells: list[WorkbookOrderCell],
     results: dict[str, PurchaseLinkResult],
@@ -1637,7 +1852,7 @@ def resolve_orders(
     if global_search_on_not_found:
         missing_after_exact = [ref for ref in unique if ref not in results]
         if missing_after_exact:
-            results.update(resolve_global_exact_refs(missing_after_exact, client))
+            results.update(resolve_global_fast_exact_refs(missing_after_exact, client))
 
     remaining = [ref for ref in unique if ref not in results]
     thread_local = threading.local()
@@ -1667,7 +1882,7 @@ def resolve_orders(
             if results.get(ref, PurchaseLinkResult(status="not_found")).status == "not_found"
         ]
         if unresolved:
-            global_contains = resolve_global_contains_refs(unresolved, client)
+            global_contains = resolve_global_fast_contains_refs(unresolved, client)
             for ref, result in global_contains.items():
                 if result.status == "linked":
                     results[ref] = result
@@ -1861,6 +2076,52 @@ def _global_search_model_fields(client: OdooClient) -> dict[str, list[str]]:
     return model_fields
 
 
+def _global_fast_model_fields(
+    client: OdooClient,
+    configured_fields: dict[str, tuple[str, ...]],
+    cache_scope: str,
+) -> dict[str, list[str]]:
+    base_key = _global_search_cache_key(client)
+    cache_key = (base_key[0], base_key[1], base_key[2], cache_scope)
+    cached = _GLOBAL_FAST_FIELDS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    model_fields: dict[str, list[str]] = {}
+    for model, desired_fields in configured_fields.items():
+        try:
+            has_access = client._call(model, "check_access_rights", ["read"], {"raise_exception": False})
+        except Exception as exc:
+            if not _is_skippable_global_search_error(exc):
+                raise
+            continue
+        if not has_access:
+            continue
+        try:
+            fields = client._call(
+                model,
+                "fields_get",
+                [],
+                {"attributes": ["type", "searchable"]},
+            )
+        except Exception as exc:
+            if not _is_skippable_global_search_error(exc):
+                raise
+            continue
+        selected = [
+            field_name
+            for field_name in desired_fields
+            if field_name in fields
+            and fields[field_name].get("searchable", True)
+            and fields[field_name].get("type") in GLOBAL_SEARCH_TEXT_TYPES
+            and field_name not in GLOBAL_SEARCH_EXCLUDED_FIELDS
+        ]
+        if selected:
+            model_fields[model] = selected
+    _GLOBAL_FAST_FIELDS_CACHE[cache_key] = model_fields
+    return model_fields
+
+
 def _chunks(values: list[Any], size: int) -> list[list[Any]]:
     return [values[index:index + size] for index in range(0, len(values), size)]
 
@@ -2048,6 +2309,61 @@ def resolve_global_exact_refs(
     return results
 
 
+def resolve_global_fast_exact_refs(
+    ref_values: list[str],
+    client: OdooClient,
+) -> dict[str, PurchaseLinkResult]:
+    refs = list(dict.fromkeys(normalize_order(ref) for ref in ref_values if normalize_order(ref)))
+    results: dict[str, PurchaseLinkResult] = {}
+    if not refs:
+        return results
+    refs_by_key = {ref.casefold(): ref for ref in refs}
+    model_fields = _global_fast_model_fields(client, GLOBAL_FAST_EXACT_FIELDS, "exact")
+    for model, fields in model_fields.items():
+        unresolved = [ref for ref in refs if ref not in results]
+        if not unresolved:
+            break
+        for ref_chunk in _chunks(unresolved, GLOBAL_SEARCH_REF_CHUNK_SIZE):
+            try:
+                records = _search_global_exact_field_group(client, model, fields, ref_chunk)
+            except Exception as exc:
+                if not _is_skippable_global_search_error(exc):
+                    raise
+                for field_name in fields:
+                    try:
+                        records = _search_global_exact_field_group(client, model, [field_name], ref_chunk)
+                    except Exception as field_exc:
+                        if not _is_skippable_global_search_error(field_exc):
+                            raise
+                        continue
+                    for record in records:
+                        for ref, matched_field, value in _find_exact_global_matches(refs_by_key, record, [field_name]):
+                            if ref not in results:
+                                results[ref] = _global_result(
+                                    client=client,
+                                    model=model,
+                                    record=record,
+                                    field_name=matched_field,
+                                    field_value=value,
+                                    match_type="exact",
+                                    query=ref,
+                                )
+                continue
+            for record in records:
+                for ref, matched_field, value in _find_exact_global_matches(refs_by_key, record, fields):
+                    if ref not in results:
+                        results[ref] = _global_result(
+                            client=client,
+                            model=model,
+                            record=record,
+                            field_name=matched_field,
+                            field_value=value,
+                            match_type="exact",
+                            query=ref,
+                        )
+    return results
+
+
 def resolve_global_contains_refs(
     ref_values: list[str],
     client: OdooClient,
@@ -2086,6 +2402,48 @@ def resolve_global_contains_refs(
                         break
                     if found:
                         break
+                if found:
+                    break
+            if found:
+                break
+    return results
+
+
+def resolve_global_fast_contains_refs(
+    ref_values: list[str],
+    client: OdooClient,
+) -> dict[str, PurchaseLinkResult]:
+    refs = list(dict.fromkeys(normalize_order(ref) for ref in ref_values if normalize_order(ref)))
+    results: dict[str, PurchaseLinkResult] = {}
+    if not refs:
+        return results
+    model_fields = _global_fast_model_fields(client, GLOBAL_FAST_CONTAINS_FIELDS, "contains")
+    for ref in refs:
+        for query in _ref_variants(ref):
+            found = False
+            for model, fields in model_fields.items():
+                try:
+                    records = _search_global_contains_field_group(client, model, fields, query)
+                except Exception as exc:
+                    if not _is_skippable_global_search_error(exc):
+                        raise
+                    continue
+                for record in records:
+                    match = _find_contains_global_match(query, record, fields)
+                    if match is None:
+                        continue
+                    field_name, value = match
+                    results[ref] = _global_result(
+                        client=client,
+                        model=model,
+                        record=record,
+                        field_name=field_name,
+                        field_value=value,
+                        match_type="contains",
+                        query=query,
+                    )
+                    found = True
+                    break
                 if found:
                     break
             if found:
@@ -2273,7 +2631,7 @@ def process_workbook(
                         workbook_path, backup_dir, stable_backup_name=stable_backup_name)
                     if workbook_path.suffix.lower() in {".xlsx", ".xlsm"}:
                         try:
-                            linked_count = write_links_with_openpyxl(
+                            linked_count = write_links_with_ooxml(
                                 workbook_path,
                                 selected_cells,
                                 results,

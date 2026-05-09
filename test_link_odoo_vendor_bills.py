@@ -1,11 +1,15 @@
 ﻿import unittest
 import xmlrpc.client
 from pathlib import Path
+from zipfile import ZipFile
 
 try:
     from openpyxl import Workbook
+    from openpyxl.worksheet.table import Table, TableStyleInfo
 except ImportError:  # pragma: no cover
     Workbook = None
+    Table = None
+    TableStyleInfo = None
 
 from link_odoo_vendor_bills import (
     ALL_HEADER_VARIANTS,
@@ -28,6 +32,7 @@ from link_odoo_vendor_bills import (
     scan_workbook_orders_from_file,
     select_cells_for_results,
     validate_odoo_settings,
+    write_links_with_ooxml,
     write_links_with_openpyxl,
     workbook_rule_for_path,
     workbook_rule_for_slot,
@@ -294,6 +299,7 @@ class ResolveModeTests(unittest.TestCase):
         )
         self.assertEqual(results["FA2026000045"].status, "linked")
         self.assertEqual(results["FA2026000045"].source_model, "account.move")
+        self.assertNotIn(("ir.model", "search_read"), client.calls)
 
 
 class OdooSettingsValidationTests(unittest.TestCase):
@@ -438,6 +444,61 @@ class HyperlinkWriteTests(unittest.TestCase):
                 self.assertEqual(linked, 1)
                 self.assertEqual(updated_cell.value, "FA356409")
                 self.assertEqual(updated_cell.hyperlink.target, "https://sphe.cloudoo.ma/odoo/purchase/66")
+            finally:
+                updated.close()
+
+    @unittest.skipIf(Workbook is None or Table is None, "openpyxl is not installed")
+    def test_ooxml_writer_preserves_table_xml_and_writes_hyperlink(self) -> None:
+        import tempfile
+        from openpyxl import load_workbook
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workbook_path = Path(tmpdir) / "book.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.title = "Feuil1"
+            sheet.append(["N°FACTURE", "Vendor", "Total"])
+            sheet.append(["FA202603527", "TRUCK CENTER", 460.0])
+            sheet.append(["FA202603528", "OTHER", 100.0])
+            table = Table(displayName="Table1", ref="A1:C3")
+            table.tableStyleInfo = TableStyleInfo(
+                name="TableStyleMedium2",
+                showRowStripes=True,
+                showColumnStripes=False,
+            )
+            sheet.add_table(table)
+            workbook.save(workbook_path)
+            workbook.close()
+
+            with ZipFile(workbook_path, "r") as before_zip:
+                table_xml_before = before_zip.read("xl/tables/table1.xml")
+
+            cells = [WorkbookOrderCell(sheet="Feuil1", row=2, column=1, address="A2", order_name="FA202603527")]
+            results = {
+                "FA202603527": PurchaseLinkResult(
+                    status="linked",
+                    source_model="account.move",
+                    record_id=2310,
+                    url="https://sphe.cloudoo.ma/web#id=2310&model=account.move&view_type=form",
+                )
+            }
+            linked = write_links_with_ooxml(workbook_path, cells, results)
+
+            with ZipFile(workbook_path, "r") as after_zip:
+                table_xml_after = after_zip.read("xl/tables/table1.xml")
+                sheet_rels = after_zip.read("xl/worksheets/_rels/sheet1.xml.rels").decode("utf-8")
+
+            updated = load_workbook(workbook_path, read_only=False)
+            try:
+                updated_cell = updated["Feuil1"]["A2"]
+                self.assertEqual(linked, 1)
+                self.assertEqual(table_xml_after, table_xml_before)
+                self.assertIn("hyperlink", sheet_rels)
+                self.assertEqual(updated_cell.value, "FA202603527")
+                self.assertEqual(
+                    updated_cell.hyperlink.target,
+                    "https://sphe.cloudoo.ma/web#id=2310&model=account.move&view_type=form",
+                )
             finally:
                 updated.close()
 
