@@ -53,7 +53,7 @@ if (-not (Test-Path -LiteralPath $pythonForVersion)) {
 $version = (& $pythonForVersion -c "from odoo_excel_agent_support import APP_VERSION; print(APP_VERSION)").Trim()
 $baseUrl = $env:ODOO_EXCEL_AGENT_UPDATE_BASE_URL
 if (-not $baseUrl) {
-    $baseUrl = "https://github.com/YOUR-USER/YOUR-REPO/releases/download/v$version"
+    $baseUrl = "https://github.com/omar4omar4o-ops/odoo-excel-agent/releases/download/v$version"
 }
 $baseUrl = $baseUrl.TrimEnd("/")
 $zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()

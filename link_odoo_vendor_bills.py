@@ -59,10 +59,6 @@ DEFAULT_EXCEL_SAVE_DEBOUNCE_SECONDS = 1
 PERFORMANCE_MODE_SILENT = "silent"
 PERFORMANCE_MODE_LIVE = "live"
 DEFAULT_ODOO_MAX_WORKERS = 3
-LOCAL_HEADER_VARIANTS = {"n°facture", "n° facture", "nfacture", "n facture"}
-ETRANGER_HEADER_VARIANTS = {"n commande", "n° commande", "ncommande"}
-ETRANGER_TOTAL_HEADER_VARIANTS = {"mtt de facture"}
-ALL_HEADER_VARIANTS = LOCAL_HEADER_VARIANTS | ETRANGER_HEADER_VARIANTS
 LOCAL_WORKBOOK_FILE_NAME = "excel facture achats local.xlsx"
 ETRANGER_WORKBOOK_FILE_NAME = "tracking achats etranger (1).xlsx"
 LOOKUP_MODE_PARTNER_REF = "partner_ref"
@@ -75,8 +71,7 @@ DEFAULT_AMOUNT_TOLERANCES = (0.01, 0.05, 0.50)
 ODOO_RPC_MAX_ATTEMPTS = 3
 ODOO_RPC_RETRY_BASE_SECONDS = 0.75
 
-# Override legacy mojibake constants with normalized header sets used by the
-# ACHATS and seller workflows.
+# Normalized header sets used by the ACHATS and seller workflows.
 LOCAL_HEADER_VARIANTS = {"n\u00b0facture", "n\u00b0 facture", "nfacture", "n facture"}
 LOCAL_COMMAND_HEADER_VARIANTS = {
     "n commandes",
@@ -87,6 +82,7 @@ LOCAL_COMMAND_HEADER_VARIANTS = {
     "ncommande",
 }
 ETRANGER_HEADER_VARIANTS = LOCAL_COMMAND_HEADER_VARIANTS
+ETRANGER_TOTAL_HEADER_VARIANTS = {"mtt de facture"}
 ALL_HEADER_VARIANTS = LOCAL_HEADER_VARIANTS | ETRANGER_HEADER_VARIANTS
 
 PURCHASE_ORDER_FIELDS = [
@@ -220,7 +216,7 @@ def many2one_name(value: Any) -> str:
 
 def normalize_header(value: Any) -> str:
     text = str(value or "")
-    text = text.replace("\xa0", " ").replace("Â°", "°").replace("º", "°")
+    text = text.replace("\xa0", " ").replace("\u00c2\u00b0", "\u00b0").replace("\u00ba", "\u00b0")
     return re.sub(r"\s+", " ", text.strip()).casefold()
 
 
@@ -264,6 +260,9 @@ def validate_odoo_settings(
     record_value = str(record_url_example or "").strip()
     if not normalized_url or not is_http_url(normalized_url):
         raise ValueError("Odoo URL must be a full http/https URL, for example: https://sphe.cloudoo.ma")
+    parsed_odoo_url = urlparse(normalized_url)
+    if parsed_odoo_url.path not in {"", "/"}:
+        raise ValueError("Odoo URL must be the server root only, for example: https://sphe.cloudoo.ma")
     if not db_value:
         raise ValueError("Odoo database is required.")
     if is_http_url(db_value):
@@ -676,10 +675,7 @@ class OdooClient:
             ("partner_ref", "ilike", "contains:partner_ref", self.search_purchase_orders_by_partner_ref),
         ]
         for field_name, operator, default_match, search_func in stages:
-            try:
-                orders = search_func(term, operator)
-            except Exception:
-                orders = []
+            orders = search_func(term, operator)
             if not orders:
                 continue
             best = self._pick_best_order(
@@ -706,10 +702,7 @@ class OdooClient:
                 note="Reference could not be parsed as amount for amount_total lookup.",
             )
 
-        try:
-            exact_orders = self.search_purchase_orders_by_amount_exact(amount)
-        except Exception:
-            exact_orders = []
+        exact_orders = self.search_purchase_orders_by_amount_exact(amount)
         if exact_orders:
             best = exact_orders[0]
             return self._linked_order_result(
@@ -720,10 +713,7 @@ class OdooClient:
         for tolerance in DEFAULT_AMOUNT_TOLERANCES:
             minimum = amount - tolerance
             maximum = amount + tolerance
-            try:
-                range_orders = self.search_purchase_orders_by_amount_range(minimum, maximum)
-            except Exception:
-                range_orders = []
+            range_orders = self.search_purchase_orders_by_amount_range(minimum, maximum)
             if not range_orders:
                 continue
             best = self._pick_best_order_by_amount(amount, range_orders)
@@ -1614,15 +1604,12 @@ def resolve_orders_exact_batch(
         return {}
     if not ref_values:
         return {}
-    try:
-        if lookup_mode == LOOKUP_MODE_COMMAND_REF:
-            return _resolve_command_refs_exact_batch(ref_values, client)
-        if lookup_mode == LOOKUP_MODE_TOTAL_AMOUNT:
-            return _resolve_amounts_exact_batch(ref_values, client)
-        if lookup_mode == LOOKUP_MODE_PARTNER_REF:
-            return _resolve_text_refs_exact_batch(ref_values, client, "partner_ref")
-    except Exception:
-        return {}
+    if lookup_mode == LOOKUP_MODE_COMMAND_REF:
+        return _resolve_command_refs_exact_batch(ref_values, client)
+    if lookup_mode == LOOKUP_MODE_TOTAL_AMOUNT:
+        return _resolve_amounts_exact_batch(ref_values, client)
+    if lookup_mode == LOOKUP_MODE_PARTNER_REF:
+        return _resolve_text_refs_exact_batch(ref_values, client, "partner_ref")
     return {}
 
 

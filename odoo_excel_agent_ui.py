@@ -70,6 +70,7 @@ from odoo_excel_updater import (
 
 
 SUPPORT_FILES = [
+    "launcher.py",
     "link_odoo_vendor_bills.py",
     "odoo_excel_background.py",
     "odoo_excel_agent_support.py",
@@ -321,7 +322,7 @@ class AgentControlApp:
         self.main_frame.pack(fill=BOTH, expand=True, padx=0, pady=0)
         self.main_frame.columnconfigure(0, weight=1)
 
-        # â”€â”€ Hero header â”€â”€
+        # Hero header
         hero = ctk.CTkFrame(self.main_frame, fg_color=p["hero_bg"], corner_radius=12, border_width=1, border_color=p["border"])
         hero.grid(row=0, column=0, sticky="ew", padx=12, pady=(10, 6))
         hero.columnconfigure(0, weight=1)
@@ -333,7 +334,7 @@ class AgentControlApp:
         title_frame = ctk.CTkFrame(hero_inner, fg_color="transparent")
         title_frame.grid(row=0, column=0, sticky="w")
         ctk.CTkLabel(title_frame, text="Odoo Excel Agent", font=ctk.CTkFont(family="Segoe UI", size=22, weight="bold"), text_color="#ffffff").pack(anchor="w")
-        ctk.CTkLabel(title_frame, text="Silent workbook monitoring · Odoo validation · Background automation", font=ctk.CTkFont(size=12), text_color=p["muted"]).pack(anchor="w", pady=(2, 0))
+        ctk.CTkLabel(title_frame, text="Silent workbook monitoring - Odoo validation - Background automation", font=ctk.CTkFont(size=12), text_color=p["muted"]).pack(anchor="w", pady=(2, 0))
 
         ctrl_frame = ctk.CTkFrame(hero_inner, fg_color="transparent")
         ctrl_frame.grid(row=0, column=1, sticky="e")
@@ -342,7 +343,7 @@ class AgentControlApp:
         ctk.CTkButton(ctrl_frame, text="Refresh", width=90, height=32, fg_color="transparent", border_width=1, border_color=p["border"], hover_color=p["hover"], text_color=p["ink"], command=self.refresh_status).pack(side=LEFT, padx=(0, 6))
         ctk.CTkButton(ctrl_frame, text="Save", width=90, height=32, fg_color=p["accent"], hover_color=p["accent_deep"], text_color="#ffffff", command=self.save_config).pack(side=LEFT)
 
-        # â”€â”€ Summary cards â”€â”€
+        # Summary cards
         cards_row = ctk.CTkFrame(hero, fg_color="transparent")
         cards_row.pack(fill="x", padx=14, pady=(4, 12))
         for i in range(3):
@@ -352,13 +353,13 @@ class AgentControlApp:
         self._build_summary_card(cards_row, 1, "Watch Target", self.watch_summary_var, self.watch_detail_var, style_name="SummaryCardAlt.TFrame")
         self._build_summary_card(cards_row, 2, "Runtime Packages", self.dependency_summary_var, self.dependency_detail_var, style_name="SummaryCard.TFrame")
 
-        # â”€â”€ Config path strip â”€â”€
+        # Config path strip
         config_strip = ctk.CTkFrame(self.main_frame, fg_color="transparent", height=30)
         config_strip.grid(row=1, column=0, sticky="ew", padx=16, pady=(2, 2))
         ctk.CTkLabel(config_strip, text="Config:", font=ctk.CTkFont(size=11), text_color=p["muted"]).pack(side=LEFT)
         ctk.CTkLabel(config_strip, textvariable=self.config_summary_var, font=ctk.CTkFont(size=11), text_color=p["ink"]).pack(side=LEFT, padx=(6, 0))
 
-        # â”€â”€ Tabview â”€â”€
+        # Tabview
         self.tabview = ctk.CTkTabview(self.main_frame, fg_color=p["card"], corner_radius=12, border_width=1, border_color=p["border"], segmented_button_fg_color=p["card_alt"], segmented_button_selected_color=p["accent"], segmented_button_selected_hover_color=p["accent_deep"], segmented_button_unselected_color=p["card_alt"], segmented_button_unselected_hover_color=p["hover"], height=self.tab_view_height)
         self.tabview.grid(row=2, column=0, sticky="nsew", padx=12, pady=(4, 12))
         self.main_frame.rowconfigure(2, weight=1)
@@ -565,8 +566,8 @@ class AgentControlApp:
         guide = self._create_card(parent, row=0, column=1, style_name="CardAlt.TFrame")
         self._add_section_header(guide, "What Happens", "The one-click run keeps your workflow safe.", alt=True)
         guide_points = (
-            "Reads workbook-specific columns (N°FACTURE, N commandes, MTT DE FACTURE, or legacy headers).",
-            "ACHATS LOCAL tries N°FACTURE first, then N commandes if the first value is not found.",
+            "Reads workbook-specific columns (N\u00b0FACTURE, N commandes, MTT DE FACTURE, or legacy headers).",
+            "ACHATS LOCAL tries N\u00b0FACTURE first, then N commandes if the first value is not found.",
             "Uses workbook-specific lookup rules (Reference commande, Total, or partner_ref).",
             "Silent mode waits for open workbooks to close before writing.",
             "Creates a backup before writing hyperlinks.",
@@ -692,7 +693,7 @@ class AgentControlApp:
 
         top = self._create_card(parent, row=0, column=0, padding=(18, 16, 18, 16))
         top.columnconfigure(0, weight=1)
-        self._add_section_header(top, "ðŸ“Š Runtime Activity", "Review the latest actions and confirm what the background agent is doing.")
+        self._add_section_header(top, "Runtime Activity", "Review the latest actions and confirm what the background agent is doing.")
         top_row = ctk.CTkFrame(top, fg_color="transparent")
         top_row.pack(fill="x", padx=14, pady=(0, 8))
         ctk.CTkButton(top_row, text="Open Log", width=100, height=30, fg_color=p["card_alt"], hover_color=p["hover"], text_color=p["ink"], border_width=1, border_color=p["border"], command=self.open_log).pack(side=LEFT)
@@ -874,7 +875,7 @@ class AgentControlApp:
     def _watch_target_status_lines(self) -> list[str]:
         lines: list[str] = []
         for label, raw_path, required_header in (
-            ("ACHATS LOCAL", self._normalized_achats_local_file(), "N°FACTURE or N commandes"),
+            ("ACHATS LOCAL", self._normalized_achats_local_file(), "N\u00b0FACTURE or N commandes"),
             ("ACHATS ETRANGER", self._normalized_achats_etranger_file(), "MTT DE FACTURE"),
             ("Seller / Previous", self._normalized_seller_previous_file(), "legacy seller headers"),
         ):
@@ -1023,13 +1024,14 @@ class AgentControlApp:
 
     def _credential_target_for_save(self, typed_key: str) -> str:
         configured_target = str(self.credential_target or "").strip()
-        if configured_target and (not typed_key or credential_exists(configured_target)):
-            return configured_target
-        return make_credential_target(
+        expected_target = make_credential_target(
             self._config_file_path(),
             self.odoo_db_var.get().strip(),
             self.odoo_login_var.get().strip(),
         )
+        if configured_target == expected_target and (not typed_key or credential_exists(configured_target)):
+            return configured_target
+        return expected_target
 
     def _build_config(self) -> dict[str, Any]:
         install_dir = self._install_dir()
@@ -1108,7 +1110,7 @@ class AgentControlApp:
         self.update_manifest_url_var.set(str(updates.get("manifest_url") or DEFAULT_UPDATE_URL))
         last_seen = str(updates.get("last_seen_version") or "").strip()
         if last_seen:
-            self.update_state_var.set(f"Current: {APP_VERSION} · Latest seen: {last_seen}")
+            self.update_state_var.set(f"Current: {APP_VERSION} - Latest seen: {last_seen}")
         self.credential_target = str(config["odoo"].get("credential_target") or "")
         self._migrate_legacy_api_key_if_needed()
         self._refresh_credential_state()
@@ -1121,7 +1123,11 @@ class AgentControlApp:
     def _migrate_legacy_api_key_if_needed(self) -> None:
         if not self.config_path.exists():
             return
-        raw = json.loads(self.config_path.read_text(encoding="utf-8-sig"))
+        try:
+            raw = json.loads(self.config_path.read_text(encoding="utf-8-sig"))
+        except Exception as exc:
+            self.append_status(f"Skipped legacy API key migration because config is unreadable: {exc}")
+            return
         legacy_api_key = str(raw.get("odoo", {}).get("api_key") or "").strip()
         if not legacy_api_key:
             return

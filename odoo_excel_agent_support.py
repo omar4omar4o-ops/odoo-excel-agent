@@ -23,14 +23,14 @@ from link_odoo_vendor_bills import (
 
 APP_NAME = "Odoo Excel Agent"
 APP_DIR_NAME = "OdooExcelAgent"
-APP_VERSION = "2026.05.08.7"
+APP_VERSION = "2026.05.09.1"
 DEFAULT_UPDATE_URL = "https://api.github.com/repos/omar4omar4o-ops/odoo-excel-agent/releases/latest"
 AGENT_SCRIPT = "odoo_excel_background.py"
 UI_SCRIPT = "odoo_excel_agent_ui.py"
 STARTUP_SHORTCUT = Path(os.getenv("APPDATA", str(Path.home()))) / "Microsoft/Windows/Start Menu/Programs/Startup/Odoo Excel Agent.lnk"
 DEFAULT_INSTALL_DIR = Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / APP_DIR_NAME
-DEFAULT_SETTLE_SECONDS = 3
-DEFAULT_RETRY_DELAY_SECONDS = 15
+DEFAULT_SETTLE_SECONDS = 15
+DEFAULT_RETRY_DELAY_SECONDS = 45
 DEFAULT_EXCEL_SAVE_DEBOUNCE_SECONDS = 1
 CONFIG_VERSION = 4
 WATCH_MODE_SELECTED_WORKBOOKS = "selected_workbooks"
@@ -238,7 +238,14 @@ def load_normalized_config(config_path: Path) -> tuple[dict[str, Any], list[str]
     if not config_path.exists():
         return config, messages
 
-    raw = json.loads(config_path.read_text(encoding="utf-8-sig"))
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8-sig"))
+    except Exception as exc:
+        messages.append(f"Config file is unreadable; loaded safe defaults instead: {exc}")
+        return config, messages
+    if not isinstance(raw, dict):
+        messages.append("Config file is not a JSON object; loaded safe defaults instead.")
+        return config, messages
     odoo_raw = raw.get("odoo", {}) if isinstance(raw, dict) else {}
     processing_raw = raw.get("processing", {}) if isinstance(raw, dict) else {}
     background_raw = raw.get("background", {}) if isinstance(raw, dict) else {}

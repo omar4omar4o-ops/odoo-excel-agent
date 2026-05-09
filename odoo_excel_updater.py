@@ -217,8 +217,17 @@ def prepare_update_payload(asset_path: Path, staging_dir: Path | None = None) ->
     staging_root.mkdir(parents=True, exist_ok=True)
     suffix = asset_path.suffix.casefold()
     if suffix == ".zip":
+        staging_resolved = staging_root.resolve()
         with zipfile.ZipFile(asset_path) as archive:
-            archive.extractall(staging_root)
+            for member in archive.namelist():
+                member_path = (staging_resolved / member).resolve()
+                try:
+                    member_path.relative_to(staging_resolved)
+                except ValueError as exc:
+                    raise RuntimeError(
+                        f"Update ZIP contains a path traversal entry: {member}"
+                    ) from exc
+            archive.extractall(staging_resolved)
         exe_candidates = sorted(staging_root.rglob("OdooExcelAgent.exe"))
         if not exe_candidates:
             raise RuntimeError("Update ZIP does not contain OdooExcelAgent.exe.")

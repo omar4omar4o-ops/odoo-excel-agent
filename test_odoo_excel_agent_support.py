@@ -129,6 +129,16 @@ class OdooExcelAgentSupportTests(unittest.TestCase):
         self.assertEqual(background["seller_previous_file"], "")
         self.assertTrue(any("ACHATS LOCAL" in message for message in messages))
 
+    def test_load_normalized_config_recovers_from_corrupt_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.json"
+            config_path.write_text("{not valid json", encoding="utf-8")
+
+            normalized, messages = load_normalized_config(config_path)
+
+        self.assertEqual(normalized["background"]["watch_mode"], WATCH_MODE_SELECTED_WORKBOOKS)
+        self.assertTrue(any("unreadable" in message for message in messages))
+
     def test_load_normalized_config_keeps_unknown_legacy_file_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             temp_path = Path(tmpdir)

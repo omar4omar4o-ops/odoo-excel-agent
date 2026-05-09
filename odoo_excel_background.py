@@ -76,6 +76,26 @@ MENU_SCAN_NOW = 1004
 MENU_EXIT = 1005
 
 
+def is_retryable_odoo_runtime_message(message: str) -> bool:
+    lowered = message.casefold()
+    markers = (
+        "odoo is temporarily overloaded",
+        "postgresql connection slots",
+        "remaining connection slots",
+        "too many clients",
+        "could not reach odoo",
+        "network error while contacting odoo",
+        "connection reset",
+        "connection refused",
+        "connection timed out",
+        "server closed the connection",
+        "service unavailable",
+        "bad gateway",
+        "gateway timeout",
+    )
+    return any(marker in lowered for marker in markers)
+
+
 @dataclass(frozen=True)
 class OdooSettings:
     url: str
@@ -1048,6 +1068,9 @@ class OdooExcelAgent:
                 return
             if "locked" in message:
                 self._retry_later(path, "Workbook appears locked. Waiting before retry.", "excel_waiting_close")
+                return
+            if is_retryable_odoo_runtime_message(message):
+                self._retry_later(path, "Odoo is temporarily unavailable. Waiting before retry.", "odoo_unavailable")
                 return
             raise
         except WorkbookAccessError as exc:

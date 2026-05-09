@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from link_odoo_vendor_bills import WORKBOOK_SLOT_ACHATS_ETRANGER
 from odoo_excel_agent_support import WATCH_MODE_SELECTED_WORKBOOKS
 import odoo_excel_background
-from odoo_excel_background import OdooExcelAgent, load_agent_config
+from odoo_excel_background import OdooExcelAgent, is_retryable_odoo_runtime_message, load_agent_config
 
 
 class BackgroundWatchFilteringTests(unittest.TestCase):
@@ -149,6 +149,11 @@ class BackgroundWatchFilteringTests(unittest.TestCase):
         self.assertEqual(status["state"], "startup_failed")
         self.assertEqual(status["last_issue_code"], "missing_api_key")
         self.assertEqual(opened, [config_path.resolve()])
+
+    def test_retryable_odoo_runtime_messages_are_detected(self) -> None:
+        self.assertTrue(is_retryable_odoo_runtime_message("Odoo is temporarily overloaded"))
+        self.assertTrue(is_retryable_odoo_runtime_message("Gateway Timeout"))
+        self.assertFalse(is_retryable_odoo_runtime_message("Odoo database not found"))
 
 
 if __name__ == "__main__":

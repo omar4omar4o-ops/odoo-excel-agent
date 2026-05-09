@@ -90,6 +90,18 @@ class UpdaterTests(unittest.TestCase):
             self.assertEqual(prepared.new_exe.name, "OdooExcelAgent.exe")
             self.assertEqual(sha256_file(prepared.new_exe), sha256_file(exe))
 
+    def test_prepare_update_payload_rejects_zip_path_traversal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            archive = root / "bad-update.zip"
+            with zipfile.ZipFile(archive, "w") as zip_file:
+                zip_file.writestr("../evil/OdooExcelAgent.exe", b"bad")
+
+            with self.assertRaisesRegex(RuntimeError, "path traversal"):
+                prepare_update_payload(archive, root / "staging")
+
+            self.assertFalse((root / "evil" / "OdooExcelAgent.exe").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -140,6 +140,22 @@ class TotalToleranceFallbackClient(OdooClient):
         return [make_order(401, name="PO00401", partner_ref="REF-401", amount_total=100.04)]
 
 
+class FailingCommandRefClient(OdooClient):
+    def __init__(self) -> None:
+        super().__init__("https://sphe.cloudoo.ma", "db", "login", "key")
+
+    def search_purchase_orders_by_name(self, ref: str, operator: str) -> list[dict]:
+        raise RuntimeError("Odoo is temporarily overloaded")
+
+
+class FailingTotalClient(OdooClient):
+    def __init__(self) -> None:
+        super().__init__("https://sphe.cloudoo.ma", "db", "login", "key")
+
+    def search_purchase_orders_by_amount_exact(self, amount: float) -> list[dict]:
+        raise RuntimeError("Odoo is temporarily overloaded")
+
+
 class ResolveModeTests(unittest.TestCase):
     def test_command_ref_lookup_uses_name(self) -> None:
         client = CommandRefClient()
@@ -194,6 +210,16 @@ class ResolveModeTests(unittest.TestCase):
         self.assertEqual(client.exact_calls, [])
         self.assertEqual(client.range_calls, [])
 
+    def test_command_ref_lookup_propagates_odoo_errors(self) -> None:
+        client = FailingCommandRefClient()
+        with self.assertRaisesRegex(RuntimeError, "temporarily overloaded"):
+            client.resolve_purchase_ref("FA202603527", lookup_mode=LOOKUP_MODE_COMMAND_REF)
+
+    def test_total_lookup_propagates_odoo_errors(self) -> None:
+        client = FailingTotalClient()
+        with self.assertRaisesRegex(RuntimeError, "temporarily overloaded"):
+            client.resolve_purchase_ref("8753.76", lookup_mode=LOOKUP_MODE_TOTAL_AMOUNT)
+
 
 class OdooSettingsValidationTests(unittest.TestCase):
     def test_validate_odoo_settings_rejects_url_in_db_field(self) -> None:
@@ -201,6 +227,14 @@ class OdooSettingsValidationTests(unittest.TestCase):
             validate_odoo_settings(
                 "https://sphe.cloudoo.ma",
                 "https://limewire.com/d/9nluz#2VJ4biiLRw",
+                "user@example.com",
+            )
+
+    def test_validate_odoo_settings_rejects_path_in_odoo_url(self) -> None:
+        with self.assertRaisesRegex(ValueError, "server root only"):
+            validate_odoo_settings(
+                "https://sphe.cloudoo.ma/odoo/purchase/1",
+                "sphe.cloudoo.ma",
                 "user@example.com",
             )
 
