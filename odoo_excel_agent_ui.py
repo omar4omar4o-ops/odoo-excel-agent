@@ -29,6 +29,7 @@ from link_odoo_vendor_bills import (
     OdooClient,
     PERFORMANCE_MODE_LIVE,
     PERFORMANCE_MODE_SILENT,
+    prepare_backup_dir_layout,
     WORKBOOK_SLOT_ACHATS_ETRANGER,
     WORKBOOK_SLOT_ACHATS_LOCAL,
     WORKBOOK_SLOT_SELLER_PREVIOUS,
@@ -572,7 +573,7 @@ class AgentControlApp:
             "ACHATS ETRANGER searches Odoo from N COMMANDE, not the amount.",
             "Uses workbook-specific lookup rules (Reference commande with partner_ref fallback, or legacy partner_ref).",
             "Silent mode waits for open workbooks to close before writing.",
-            "Writes .xlsx/.xlsm hyperlinks with direct OOXML patching and creates a backup first.",
+            "Writes .xlsx/.xlsm hyperlinks with direct OOXML patching and stores original snapshots in a hidden backup subfolder.",
         )
         for text in guide_points:
             ctk.CTkLabel(guide, text=text, font=ctk.CTkFont(size=11), text_color=p["muted"], wraplength=380, justify="left").pack(anchor="w", padx=14, pady=3)
@@ -615,7 +616,7 @@ class AgentControlApp:
         self.update_open_workbook_check = self._add_checkbutton(behavior, "Update open workbook after save", self.update_open_workbook_var, alt=True)
         self._add_checkbutton(behavior, "Show Excel while processing", self.visible_excel_var, alt=True)
         self._add_checkbutton(behavior, "Write CSV reports", self.write_report_var, alt=True)
-        self._add_checkbutton(behavior, "Keep stable original backup", self.stable_backup_var, alt=True)
+        self._add_checkbutton(behavior, "Keep hidden original snapshot", self.stable_backup_var, alt=True)
 
         monitoring = self._create_card(parent, row=1, column=0, padx=(0, 10))
         self._add_section_header(monitoring, "Advanced Live Excel Monitoring", "Fine-tune how the agent listens to Excel save and close events.")
@@ -1599,7 +1600,8 @@ class AgentControlApp:
             messagebox.showinfo(APP_NAME, "Log file does not exist yet.")
 
     def open_backups(self) -> None:
-        path = Path(self._normalized_backup_dir())
+        layout = prepare_backup_dir_layout(Path(self._normalized_backup_dir()))
+        path = layout["run_dir"]
         path.mkdir(parents=True, exist_ok=True)
         os.startfile(str(path))
 

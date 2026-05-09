@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import ctypes
 import csv
 import datetime as dt
 import getpass
@@ -81,6 +82,8 @@ GLOBAL_SEARCH_FIELD_GROUP_SIZE = 7
 GLOBAL_SEARCH_REF_CHUNK_SIZE = 80
 GLOBAL_SEARCH_RECORD_LIMIT = 500
 GLOBAL_SEARCH_CONTAINS_LIMIT = 5
+BACKUP_RUNS_DIR_NAME = "run-backups"
+BACKUP_ORIGINALS_DIR_NAME = "original-snapshots"
 OOXML_MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 OOXML_MC_NS = "http://schemas.openxmlformats.org/markup-compatibility/2006"
 OOXML_DOC_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -596,13 +599,56 @@ def default_report_path(workbook_path: Path, report_dir: Path | None = None) -> 
     return target_dir / f"{workbook_path.stem}.purchase-link-report-{make_timestamp()}.csv"
 
 
+def _set_hidden_windows_path(path: Path) -> None:
+    if os.name != "nt" or not path.exists():
+        return
+    try:
+        attrs = ctypes.windll.kernel32.GetFileAttributesW(str(path))
+        if attrs in (-1, 0xFFFFFFFF):
+            return
+        hidden_flag = 0x02
+        if not attrs & hidden_flag:
+            ctypes.windll.kernel32.SetFileAttributesW(str(path), attrs | hidden_flag)
+    except Exception:
+        return
+
+
+def prepare_backup_dir_layout(backup_root: Path) -> dict[str, Path]:
+    backup_root.mkdir(parents=True, exist_ok=True)
+    run_dir = backup_root / BACKUP_RUNS_DIR_NAME
+    originals_dir = backup_root / BACKUP_ORIGINALS_DIR_NAME
+    run_dir.mkdir(parents=True, exist_ok=True)
+    originals_dir.mkdir(parents=True, exist_ok=True)
+    _set_hidden_windows_path(originals_dir)
+
+    for item in list(backup_root.iterdir()):
+        if not item.is_file():
+            continue
+        lower_name = item.name.lower()
+        destination_dir: Path | None = None
+        if ".original." in lower_name:
+            destination_dir = originals_dir
+        elif ".backup-" in lower_name:
+            destination_dir = run_dir
+        if destination_dir is None:
+            continue
+        destination = destination_dir / item.name
+        if not destination.exists():
+            shutil.move(str(item), str(destination))
+        if destination_dir == originals_dir:
+            _set_hidden_windows_path(destination)
+
+    return {"root": backup_root, "run_dir": run_dir, "originals_dir": originals_dir}
+
+
 def build_backup_path(
     workbook_path: Path,
     backup_dir: Path | None = None,
     stable_backup_name: bool = False,
 ) -> Path:
-    target_dir = backup_dir if backup_dir is not None else workbook_path.parent
-    target_dir.mkdir(parents=True, exist_ok=True)
+    target_root = backup_dir if backup_dir is not None else workbook_path.parent
+    layout = prepare_backup_dir_layout(target_root)
+    target_dir = layout["originals_dir"] if stable_backup_name else layout["run_dir"]
     if stable_backup_name:
         digest = hashlib.sha1(str(workbook_path).encode("utf-8")).hexdigest()[:10]
         return target_dir / f"{workbook_path.stem}.{digest}.original{workbook_path.suffix}"
@@ -617,11 +663,16 @@ def backup_workbook(
 ) -> Path:
     backup_path = build_backup_path(workbook_path, backup_dir, stable_backup_name=stable_backup_name)
     if stable_backup_name and backup_path.exists():
+        _set_hidden_windows_path(backup_path)
         return backup_path
     if workbook is not None:
         workbook.SaveCopyAs(str(backup_path))
+        if stable_backup_name:
+            _set_hidden_windows_path(backup_path)
         return backup_path
     shutil.copy2(workbook_path, backup_path)
+    if stable_backup_name:
+        _set_hidden_windows_path(backup_path)
     return backup_path
 
 
@@ -1831,11 +1882,15 @@ def _ooxml_cell_elements(sheet_text: str) -> Any:
 
 def _ooxml_collect_cell_style_ids(sheet_text: str, addresses: set[str]) -> dict[str, int]:
     style_ids: dict[str, int] = {}
-    for match in _ooxml_cell_elements(sheet_text):
-        cell_xml = match.group(0)
-        address = _ooxml_xml_attr(cell_xml, "r")
-        if address not in addresses:
+    for address in sorted(addresses):
+        match = re.search(
+            rf"<c\b(?=[^>]*\br={quoteattr(address)})[^>]*(?:/>|>.*?</c>)",
+            sheet_text,
+            flags=re.DOTALL,
+        )
+        if match is None:
             continue
+        cell_xml = match.group(0)
         try:
             style_ids[address] = int(_ooxml_xml_attr(cell_xml, "s") or "0")
         except ValueError:
@@ -1847,22 +1902,29 @@ def _ooxml_set_cell_style_ids(sheet_text: str, style_by_address: dict[str, int])
     if not style_by_address:
         return sheet_text
 
-    def replace_cell(match: re.Match[str]) -> str:
-        cell_xml = match.group(0)
-        address = _ooxml_xml_attr(cell_xml, "r")
-        if address not in style_by_address:
-            return cell_xml
-        style_id = str(style_by_address[address])
+    def update_cell_xml(cell_xml: str, style_id: int) -> str:
+        style_id_str = str(style_id)
         if re.search(r"\ss=(['\"])(.*?)\1", cell_xml):
-            return re.sub(r"\ss=(['\"])(.*?)\1", f' s="{style_id}"', cell_xml, count=1)
+            return re.sub(r"\ss=(['\"])(.*?)\1", f' s="{style_id_str}"', cell_xml, count=1)
         insert_at = cell_xml.find("/>")
         if insert_at < 0:
             insert_at = cell_xml.find(">")
         if insert_at < 0:
             return cell_xml
-        return cell_xml[:insert_at] + f' s="{style_id}"' + cell_xml[insert_at:]
+        return cell_xml[:insert_at] + f' s="{style_id_str}"' + cell_xml[insert_at:]
 
-    return re.sub(r"<c\b[^>]*(?:/>|>.*?</c>)", replace_cell, sheet_text, flags=re.DOTALL)
+    updated_text = sheet_text
+    for address, style_id in style_by_address.items():
+        cell_pattern = re.compile(
+            rf"<c\b(?=[^>]*\br={quoteattr(address)})[^>]*(?:/>|>.*?</c>)",
+            flags=re.DOTALL,
+        )
+
+        def replace_target(match: re.Match[str]) -> str:
+            return update_cell_xml(match.group(0), style_id)
+
+        updated_text = cell_pattern.sub(replace_target, updated_text, count=1)
+    return updated_text
 
 
 def _ooxml_child_elements(parent: ET.Element, local_name: str) -> list[ET.Element]:

@@ -26,8 +26,10 @@ from link_odoo_vendor_bills import (
     _GLOBAL_SEARCH_FIELDS_CACHE,
     _ooxml_patch_sheet_hyperlinks,
     apply_links_to_workbook,
+    build_backup_path,
     build_odoo_record_url,
     explain_odoo_exception,
+    prepare_backup_dir_layout,
     resolve_global_exact_refs,
     resolve_orders,
     scan_workbook_orders_from_file,
@@ -606,6 +608,42 @@ class LocalFallbackScanTests(unittest.TestCase):
 
         self.assertEqual(scan_result.cells, [])
         self.assertEqual(scan_result.issue_code, "missing_required_header")
+
+
+class BackupLayoutTests(unittest.TestCase):
+    def test_build_backup_path_uses_separate_subfolders(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workbook = root / "Book.xlsx"
+            workbook.write_bytes(b"stub")
+
+            stable_path = build_backup_path(workbook, root, stable_backup_name=True)
+            run_path = build_backup_path(workbook, root, stable_backup_name=False)
+
+        self.assertEqual(stable_path.parent.name, "original-snapshots")
+        self.assertEqual(run_path.parent.name, "run-backups")
+
+    def test_prepare_backup_dir_layout_moves_legacy_backup_files(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            legacy_original = root / "EXCEL FACTURE ACHATS LOCAL.1234567890.original.xlsx"
+            legacy_backup = root / "EXCEL FACTURE ACHATS LOCAL.backup-20260509-155606.xlsx"
+            report = root / "report.csv"
+            legacy_original.write_bytes(b"orig")
+            legacy_backup.write_bytes(b"run")
+            report.write_text("ok", encoding="utf-8")
+
+            layout = prepare_backup_dir_layout(root)
+
+            self.assertFalse(legacy_original.exists())
+            self.assertFalse(legacy_backup.exists())
+            self.assertTrue((layout["originals_dir"] / legacy_original.name).exists())
+            self.assertTrue((layout["run_dir"] / legacy_backup.name).exists())
+            self.assertTrue(report.exists())
 
 
 if __name__ == "__main__":
