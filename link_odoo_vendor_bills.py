@@ -31,6 +31,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlparse
+from xml.sax.saxutils import quoteattr
 
 import pythoncom
 
@@ -83,6 +84,19 @@ OOXML_MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 OOXML_DOC_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 OOXML_PACKAGE_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 OOXML_HYPERLINK_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
+OOXML_KNOWN_IGNORABLE_NAMESPACES = {
+    "x14ac": "http://schemas.microsoft.com/office/spreadsheetml/2009/9/ac",
+    "xr": "http://schemas.microsoft.com/office/spreadsheetml/2014/revision",
+    "xr2": "http://schemas.microsoft.com/office/spreadsheetml/2015/revision2",
+    "xr3": "http://schemas.microsoft.com/office/spreadsheetml/2016/revision3",
+}
+OOXML_HYPERLINK_INSERT_BEFORE_TAGS = (
+    "printOptions", "pageMargins", "pageSetup", "headerFooter",
+    "rowBreaks", "colBreaks", "customProperties", "cellWatches",
+    "ignoredErrors", "smartTags", "drawing", "legacyDrawing",
+    "legacyDrawingHF", "picture", "oleObjects", "controls",
+    "webPublishItems", "tableParts", "extLst",
+)
 
 ET.register_namespace("", OOXML_MAIN_NS)
 ET.register_namespace("r", OOXML_DOC_REL_NS)
@@ -1662,28 +1676,135 @@ def _ooxml_next_relationship_id(rels_root: ET.Element) -> str:
     return f"rId{max_id + 1}"
 
 
-def _ooxml_hyperlinks_insert_index(sheet_root: ET.Element) -> int:
-    late_tags = {
-        "printOptions", "pageMargins", "pageSetup", "headerFooter",
-        "rowBreaks", "colBreaks", "customProperties", "cellWatches",
-        "ignoredErrors", "smartTags", "drawing", "legacyDrawing",
-        "legacyDrawingHF", "picture", "oleObjects", "controls",
-        "webPublishItems", "tableParts", "extLst",
-    }
-    for index, child in enumerate(list(sheet_root)):
-        tag = child.tag.rsplit("}", 1)[-1]
-        if tag in late_tags:
-            return index
-    return len(sheet_root)
+def _worksheet_root_tag_span(sheet_text: str) -> tuple[int, int]:
+    match = re.search(r"<worksheet\b[^>]*>", sheet_text)
+    if not match:
+        raise RuntimeError("Worksheet XML is missing the worksheet root element.")
+    return match.span()
 
 
-def _ooxml_ensure_hyperlinks(sheet_root: ET.Element) -> ET.Element:
-    hyperlinks = sheet_root.find(_ooxml_qname(OOXML_MAIN_NS, "hyperlinks"))
-    if hyperlinks is not None:
-        return hyperlinks
-    hyperlinks = ET.Element(_ooxml_qname(OOXML_MAIN_NS, "hyperlinks"))
-    sheet_root.insert(_ooxml_hyperlinks_insert_index(sheet_root), hyperlinks)
-    return hyperlinks
+def _ooxml_add_root_namespace(sheet_text: str, prefix: str, uri: str) -> str:
+    start, end = _worksheet_root_tag_span(sheet_text)
+    root_tag = sheet_text[start:end]
+    if re.search(rf"\sxmlns:{re.escape(prefix)}=", root_tag):
+        return sheet_text
+    updated_tag = root_tag[:-1] + f" xmlns:{prefix}={quoteattr(uri)}>"
+    return sheet_text[:start] + updated_tag + sheet_text[end:]
+
+
+def _ooxml_relationship_prefix(sheet_text: str) -> tuple[str, str]:
+    start, end = _worksheet_root_tag_span(sheet_text)
+    root_tag = sheet_text[start:end]
+    match = re.search(
+        rf"\sxmlns:([A-Za-z_][\w.-]*)={quoteattr(OOXML_DOC_REL_NS)}",
+        root_tag,
+    )
+    if match:
+        return match.group(1), sheet_text
+    prefix = "r"
+    return prefix, _ooxml_add_root_namespace(sheet_text, prefix, OOXML_DOC_REL_NS)
+
+
+def _ooxml_repair_ignorable_namespace_declarations(sheet_text: str) -> str:
+    start, end = _worksheet_root_tag_span(sheet_text)
+    root_tag = sheet_text[start:end]
+    match = re.search(r"\s(?:[A-Za-z_][\w.-]*:)?Ignorable=(['\"])(.*?)\1", root_tag)
+    if not match:
+        return sheet_text
+    for prefix in match.group(2).split():
+        uri = OOXML_KNOWN_IGNORABLE_NAMESPACES.get(prefix)
+        if uri and not re.search(rf"\sxmlns:{re.escape(prefix)}=", root_tag):
+            sheet_text = _ooxml_add_root_namespace(sheet_text, prefix, uri)
+            start, end = _worksheet_root_tag_span(sheet_text)
+            root_tag = sheet_text[start:end]
+    return sheet_text
+
+
+def _ooxml_xml_attr(element_text: str, attr_name: str) -> str:
+    pattern = rf"\s{re.escape(attr_name)}=(['\"])(.*?)\1"
+    match = re.search(pattern, element_text)
+    return match.group(2) if match else ""
+
+
+def _ooxml_xml_local_attr(element_text: str, attr_local_name: str) -> str:
+    pattern = rf"\s(?:[A-Za-z_][\w.-]*:)?{re.escape(attr_local_name)}=(['\"])(.*?)\1"
+    match = re.search(pattern, element_text)
+    return match.group(2) if match else ""
+
+
+def _ooxml_hyperlink_block_span(sheet_text: str) -> tuple[int, int] | None:
+    match = re.search(r"<hyperlinks\b[^>]*>.*?</hyperlinks>", sheet_text, flags=re.DOTALL)
+    return match.span() if match else None
+
+
+def _ooxml_remove_sheet_hyperlinks(sheet_text: str, addresses: set[str]) -> tuple[str, set[str]]:
+    block_span = _ooxml_hyperlink_block_span(sheet_text)
+    if block_span is None:
+        return sheet_text, set()
+    start, end = block_span
+    block = sheet_text[start:end]
+    open_match = re.match(r"<hyperlinks\b[^>]*>", block, flags=re.DOTALL)
+    close_match = re.search(r"</hyperlinks>\s*$", block, flags=re.DOTALL)
+    if open_match is None or close_match is None:
+        return sheet_text, set()
+
+    inner = block[open_match.end():close_match.start()]
+    removed_rel_ids: set[str] = set()
+
+    def replace_link(match: re.Match[str]) -> str:
+        element = match.group(0)
+        ref = _ooxml_xml_attr(element, "ref")
+        if ref not in addresses:
+            return element
+        rel_id = _ooxml_xml_local_attr(element, "id")
+        if rel_id:
+            removed_rel_ids.add(rel_id)
+        return ""
+
+    updated_inner = re.sub(
+        r"<hyperlink\b[^>]*(?:/>|>.*?</hyperlink>)",
+        replace_link,
+        inner,
+        flags=re.DOTALL,
+    )
+    updated_block = block[:open_match.end()] + updated_inner + block[close_match.start():]
+    return sheet_text[:start] + updated_block + sheet_text[end:], removed_rel_ids
+
+
+def _ooxml_hyperlinks_insert_position(sheet_text: str) -> int:
+    block_span = _ooxml_hyperlink_block_span(sheet_text)
+    if block_span is not None:
+        return block_span[1] - len("</hyperlinks>")
+    candidates: list[int] = []
+    for tag in OOXML_HYPERLINK_INSERT_BEFORE_TAGS:
+        match = re.search(rf"<(?:[A-Za-z_][\w.-]*:)?{tag}\b", sheet_text)
+        if match:
+            candidates.append(match.start())
+    if candidates:
+        return min(candidates)
+    close_match = re.search(r"</worksheet>\s*$", sheet_text)
+    if close_match:
+        return close_match.start()
+    raise RuntimeError("Worksheet XML is missing the closing worksheet element.")
+
+
+def _ooxml_add_sheet_hyperlinks(
+    sheet_text: str,
+    link_rel_ids_by_address: dict[str, str],
+    rel_prefix: str,
+) -> str:
+    if not link_rel_ids_by_address:
+        return sheet_text
+    block_span = _ooxml_hyperlink_block_span(sheet_text)
+    if block_span is None:
+        insert_at = _ooxml_hyperlinks_insert_position(sheet_text)
+        sheet_text = sheet_text[:insert_at] + "<hyperlinks></hyperlinks>" + sheet_text[insert_at:]
+    insert_at = _ooxml_hyperlinks_insert_position(sheet_text)
+    link_xml = "".join(
+        f"<hyperlink ref={quoteattr(address)} {rel_prefix}:id={quoteattr(rel_id)}/>"
+        for address, rel_id in sorted(link_rel_ids_by_address.items(), key=lambda item: item[0])
+    )
+    return sheet_text[:insert_at] + link_xml + sheet_text[insert_at:]
 
 
 def _ooxml_patch_sheet_hyperlinks(
@@ -1691,29 +1812,27 @@ def _ooxml_patch_sheet_hyperlinks(
     rels_xml: bytes | None,
     links_by_address: dict[str, str],
 ) -> tuple[bytes, bytes]:
-    sheet_root = ET.fromstring(sheet_xml)
+    sheet_text = sheet_xml.decode("utf-8-sig")
+    sheet_text = _ooxml_repair_ignorable_namespace_declarations(sheet_text)
+    rel_prefix, sheet_text = _ooxml_relationship_prefix(sheet_text)
     if rels_xml:
         rels_root = ET.fromstring(rels_xml)
     else:
         rels_root = ET.Element(_ooxml_qname(OOXML_PACKAGE_REL_NS, "Relationships"))
 
-    hyperlinks = _ooxml_ensure_hyperlinks(sheet_root)
-    removed_relationship_ids: set[str] = set()
-    for link in list(hyperlinks):
-        ref = str(link.attrib.get("ref") or "")
-        if ref not in links_by_address:
-            continue
-        rel_id = str(link.attrib.get(_ooxml_qname(OOXML_DOC_REL_NS, "id")) or "")
-        if rel_id:
-            removed_relationship_ids.add(rel_id)
-        hyperlinks.remove(link)
+    sheet_text, removed_relationship_ids = _ooxml_remove_sheet_hyperlinks(
+        sheet_text,
+        set(links_by_address),
+    )
 
     for rel in list(rels_root):
         if rel.attrib.get("Id") in removed_relationship_ids and rel.attrib.get("Type") == OOXML_HYPERLINK_REL_TYPE:
             rels_root.remove(rel)
 
+    rel_ids_by_address: dict[str, str] = {}
     for address, target in links_by_address.items():
         rel_id = _ooxml_next_relationship_id(rels_root)
+        rel_ids_by_address[address] = rel_id
         ET.SubElement(
             rels_root,
             _ooxml_qname(OOXML_PACKAGE_REL_NS, "Relationship"),
@@ -1724,16 +1843,9 @@ def _ooxml_patch_sheet_hyperlinks(
                 "TargetMode": "External",
             },
         )
-        ET.SubElement(
-            hyperlinks,
-            _ooxml_qname(OOXML_MAIN_NS, "hyperlink"),
-            {
-                "ref": address,
-                _ooxml_qname(OOXML_DOC_REL_NS, "id"): rel_id,
-            },
-        )
-
-    return _ooxml_xml_bytes(sheet_root), _ooxml_xml_bytes(rels_root)
+    sheet_text = _ooxml_add_sheet_hyperlinks(sheet_text, rel_ids_by_address, rel_prefix)
+    sheet_text = _ooxml_repair_ignorable_namespace_declarations(sheet_text)
+    return sheet_text.encode("utf-8"), _ooxml_xml_bytes(rels_root)
 
 
 def _replace_ooxml_zip_entries(workbook_path: Path, replacements: dict[str, bytes]) -> None:

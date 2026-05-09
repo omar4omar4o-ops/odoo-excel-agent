@@ -24,6 +24,7 @@ from link_odoo_vendor_bills import (
     WORKBOOK_SLOT_ACHATS_ETRANGER,
     WorkbookOrderCell,
     _GLOBAL_SEARCH_FIELDS_CACHE,
+    _ooxml_patch_sheet_hyperlinks,
     apply_links_to_workbook,
     build_odoo_record_url,
     explain_odoo_exception,
@@ -501,6 +502,36 @@ class HyperlinkWriteTests(unittest.TestCase):
                 )
             finally:
                 updated.close()
+
+    def test_ooxml_patch_repairs_ignorable_namespace_declarations(self) -> None:
+        sheet_xml = (
+            "<?xml version='1.0' encoding='utf-8'?>"
+            '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+            'xmlns:ns1="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+            'xmlns:ns2="http://schemas.microsoft.com/office/spreadsheetml/2014/revision" '
+            'ns1:Ignorable="x14ac xr xr2 xr3" ns2:uid="{00000000-0001-0000-0000-000000000000}">'
+            '<sheetData><row r="1"><c r="A1" t="str"><v>FA202603527</v></c></row></sheetData>'
+            '<tableParts count="1"><tablePart r:id="rId1"/></tableParts>'
+            '</worksheet>'
+        ).encode("utf-8")
+        rels_xml = (
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table1.xml"/>'
+            '</Relationships>'
+        ).encode("utf-8")
+
+        patched_sheet, patched_rels = _ooxml_patch_sheet_hyperlinks(
+            sheet_xml,
+            rels_xml,
+            {"A1": "https://sphe.cloudoo.ma/web#id=1&model=account.move&view_type=form"},
+        )
+        patched_text = patched_sheet.decode("utf-8")
+        self.assertIn('xmlns:x14ac="http://schemas.microsoft.com/office/spreadsheetml/2009/9/ac"', patched_text)
+        self.assertIn('xmlns:xr="http://schemas.microsoft.com/office/spreadsheetml/2014/revision"', patched_text)
+        self.assertIn('xmlns:xr2="http://schemas.microsoft.com/office/spreadsheetml/2015/revision2"', patched_text)
+        self.assertIn('xmlns:xr3="http://schemas.microsoft.com/office/spreadsheetml/2016/revision3"', patched_text)
+        self.assertIn("<hyperlinks>", patched_text)
+        self.assertIn("TargetMode=\"External\"", patched_rels.decode("utf-8"))
 
 
 @unittest.skipIf(Workbook is None, "openpyxl is not installed")
