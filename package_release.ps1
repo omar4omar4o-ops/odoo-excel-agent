@@ -9,11 +9,13 @@ if (-not (Test-Path -LiteralPath $exePath)) {
 }
 
 $releaseRoot = Join-Path $root "release"
-$bundleDir = Join-Path $releaseRoot "OdooExcelAgent-Windows"
+$displayBundleDir = Join-Path $releaseRoot "OdooExcelAgent-Windows"
+$stagingRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("OdooExcelAgentRelease-" + [System.Diagnostics.Process]::GetCurrentProcess().Id)
+$bundleDir = Join-Path $stagingRoot "OdooExcelAgent-Windows"
 $zipPath = Join-Path $releaseRoot "OdooExcelAgent-Windows.zip"
 $manifestPath = Join-Path $releaseRoot "update-manifest.json"
 
-$bundleExePath = Join-Path $bundleDir "OdooExcelAgent.exe"
+$bundleExePath = Join-Path $displayBundleDir "OdooExcelAgent.exe"
 if (Test-Path -LiteralPath $bundleExePath) {
     $resolvedBundleExe = (Resolve-Path -LiteralPath $bundleExePath).Path
     Get-CimInstance Win32_Process |
@@ -21,8 +23,8 @@ if (Test-Path -LiteralPath $bundleExePath) {
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 }
 
-if (Test-Path -LiteralPath $bundleDir) {
-    Remove-Item -Recurse -Force $bundleDir
+if (Test-Path -LiteralPath $stagingRoot) {
+    Remove-Item -Recurse -Force $stagingRoot
 }
 if (Test-Path -LiteralPath $zipPath) {
     Remove-Item -Force $zipPath
@@ -45,6 +47,16 @@ foreach ($name in $files) {
 }
 
 Compress-Archive -Path (Join-Path $bundleDir "*") -DestinationPath $zipPath -Force
+
+try {
+    if (Test-Path -LiteralPath $displayBundleDir) {
+        Remove-Item -Recurse -Force $displayBundleDir
+    }
+    Copy-Item -LiteralPath $bundleDir -Destination $releaseRoot -Recurse -Force
+}
+catch {
+    Write-Warning "Could not refresh release folder '$displayBundleDir'. The ZIP and manifest were still created from a clean temp staging folder. Close Explorer/Excel handles and rerun if you need the folder refreshed."
+}
 
 $pythonForVersion = Join-Path $root ".build-venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $pythonForVersion)) {
@@ -76,6 +88,8 @@ $manifest = [ordered]@{
 $manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
 
 Write-Host "Release bundle created:" -ForegroundColor Green
-Write-Host "Folder: $bundleDir"
+Write-Host "Folder: $displayBundleDir"
 Write-Host "Zip:    $zipPath"
 Write-Host "Update manifest: $manifestPath"
+
+Remove-Item -Recurse -Force $stagingRoot -ErrorAction SilentlyContinue

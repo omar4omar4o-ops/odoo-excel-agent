@@ -500,6 +500,8 @@ class HyperlinkWriteTests(unittest.TestCase):
                     updated_cell.hyperlink.target,
                     "https://sphe.cloudoo.ma/web#id=2310&model=account.move&view_type=form",
                 )
+                self.assertEqual(updated_cell.font.underline, "single")
+                self.assertEqual(updated_cell.font.color.rgb, "FF0563C1")
             finally:
                 updated.close()
 

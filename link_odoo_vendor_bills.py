@@ -10,6 +10,7 @@ By default runs in dry-run mode; pass --apply to update the workbooks.
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import datetime as dt
 import getpass
@@ -81,11 +82,13 @@ GLOBAL_SEARCH_REF_CHUNK_SIZE = 80
 GLOBAL_SEARCH_RECORD_LIMIT = 500
 GLOBAL_SEARCH_CONTAINS_LIMIT = 5
 OOXML_MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+OOXML_MC_NS = "http://schemas.openxmlformats.org/markup-compatibility/2006"
 OOXML_DOC_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 OOXML_PACKAGE_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 OOXML_HYPERLINK_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
 OOXML_KNOWN_IGNORABLE_NAMESPACES = {
     "x14ac": "http://schemas.microsoft.com/office/spreadsheetml/2009/9/ac",
+    "x16r2": "http://schemas.microsoft.com/office/spreadsheetml/2015/02/main",
     "xr": "http://schemas.microsoft.com/office/spreadsheetml/2014/revision",
     "xr2": "http://schemas.microsoft.com/office/spreadsheetml/2015/revision2",
     "xr3": "http://schemas.microsoft.com/office/spreadsheetml/2016/revision3",
@@ -99,7 +102,10 @@ OOXML_HYPERLINK_INSERT_BEFORE_TAGS = (
 )
 
 ET.register_namespace("", OOXML_MAIN_NS)
+ET.register_namespace("mc", OOXML_MC_NS)
 ET.register_namespace("r", OOXML_DOC_REL_NS)
+for _ooxml_prefix, _ooxml_uri in OOXML_KNOWN_IGNORABLE_NAMESPACES.items():
+    ET.register_namespace(_ooxml_prefix, _ooxml_uri)
 
 # Normalized header sets used by the ACHATS and seller workflows.
 LOCAL_HEADER_VARIANTS = {"n\u00b0facture", "n\u00b0 facture", "nfacture", "n facture"}
@@ -1676,20 +1682,28 @@ def _ooxml_next_relationship_id(rels_root: ET.Element) -> str:
     return f"rId{max_id + 1}"
 
 
-def _worksheet_root_tag_span(sheet_text: str) -> tuple[int, int]:
-    match = re.search(r"<worksheet\b[^>]*>", sheet_text)
+def _ooxml_root_tag_span(xml_text: str, root_name: str) -> tuple[int, int]:
+    match = re.search(rf"<(?:[A-Za-z_][\w.-]*:)?{re.escape(root_name)}\b[^>]*>", xml_text)
     if not match:
-        raise RuntimeError("Worksheet XML is missing the worksheet root element.")
+        raise RuntimeError(f"OOXML part is missing the {root_name} root element.")
     return match.span()
 
 
-def _ooxml_add_root_namespace(sheet_text: str, prefix: str, uri: str) -> str:
-    start, end = _worksheet_root_tag_span(sheet_text)
-    root_tag = sheet_text[start:end]
+def _worksheet_root_tag_span(sheet_text: str) -> tuple[int, int]:
+    return _ooxml_root_tag_span(sheet_text, "worksheet")
+
+
+def _ooxml_add_namespace_to_root(xml_text: str, root_name: str, prefix: str, uri: str) -> str:
+    start, end = _ooxml_root_tag_span(xml_text, root_name)
+    root_tag = xml_text[start:end]
     if re.search(rf"\sxmlns:{re.escape(prefix)}=", root_tag):
-        return sheet_text
+        return xml_text
     updated_tag = root_tag[:-1] + f" xmlns:{prefix}={quoteattr(uri)}>"
-    return sheet_text[:start] + updated_tag + sheet_text[end:]
+    return xml_text[:start] + updated_tag + xml_text[end:]
+
+
+def _ooxml_add_root_namespace(sheet_text: str, prefix: str, uri: str) -> str:
+    return _ooxml_add_namespace_to_root(sheet_text, "worksheet", prefix, uri)
 
 
 def _ooxml_relationship_prefix(sheet_text: str) -> tuple[str, str]:
@@ -1706,18 +1720,22 @@ def _ooxml_relationship_prefix(sheet_text: str) -> tuple[str, str]:
 
 
 def _ooxml_repair_ignorable_namespace_declarations(sheet_text: str) -> str:
-    start, end = _worksheet_root_tag_span(sheet_text)
-    root_tag = sheet_text[start:end]
+    return _ooxml_repair_ignorable_namespaces(sheet_text, "worksheet")
+
+
+def _ooxml_repair_ignorable_namespaces(xml_text: str, root_name: str) -> str:
+    start, end = _ooxml_root_tag_span(xml_text, root_name)
+    root_tag = xml_text[start:end]
     match = re.search(r"\s(?:[A-Za-z_][\w.-]*:)?Ignorable=(['\"])(.*?)\1", root_tag)
     if not match:
-        return sheet_text
+        return xml_text
     for prefix in match.group(2).split():
         uri = OOXML_KNOWN_IGNORABLE_NAMESPACES.get(prefix)
         if uri and not re.search(rf"\sxmlns:{re.escape(prefix)}=", root_tag):
-            sheet_text = _ooxml_add_root_namespace(sheet_text, prefix, uri)
-            start, end = _worksheet_root_tag_span(sheet_text)
-            root_tag = sheet_text[start:end]
-    return sheet_text
+            xml_text = _ooxml_add_namespace_to_root(xml_text, root_name, prefix, uri)
+            start, end = _ooxml_root_tag_span(xml_text, root_name)
+            root_tag = xml_text[start:end]
+    return xml_text
 
 
 def _ooxml_xml_attr(element_text: str, attr_name: str) -> str:
@@ -1807,10 +1825,135 @@ def _ooxml_add_sheet_hyperlinks(
     return sheet_text[:insert_at] + link_xml + sheet_text[insert_at:]
 
 
+def _ooxml_cell_elements(sheet_text: str) -> Any:
+    return re.finditer(r"<c\b[^>]*(?:/>|>.*?</c>)", sheet_text, flags=re.DOTALL)
+
+
+def _ooxml_collect_cell_style_ids(sheet_text: str, addresses: set[str]) -> dict[str, int]:
+    style_ids: dict[str, int] = {}
+    for match in _ooxml_cell_elements(sheet_text):
+        cell_xml = match.group(0)
+        address = _ooxml_xml_attr(cell_xml, "r")
+        if address not in addresses:
+            continue
+        try:
+            style_ids[address] = int(_ooxml_xml_attr(cell_xml, "s") or "0")
+        except ValueError:
+            style_ids[address] = 0
+    return style_ids
+
+
+def _ooxml_set_cell_style_ids(sheet_text: str, style_by_address: dict[str, int]) -> str:
+    if not style_by_address:
+        return sheet_text
+
+    def replace_cell(match: re.Match[str]) -> str:
+        cell_xml = match.group(0)
+        address = _ooxml_xml_attr(cell_xml, "r")
+        if address not in style_by_address:
+            return cell_xml
+        style_id = str(style_by_address[address])
+        if re.search(r"\ss=(['\"])(.*?)\1", cell_xml):
+            return re.sub(r"\ss=(['\"])(.*?)\1", f' s="{style_id}"', cell_xml, count=1)
+        insert_at = cell_xml.find("/>")
+        if insert_at < 0:
+            insert_at = cell_xml.find(">")
+        if insert_at < 0:
+            return cell_xml
+        return cell_xml[:insert_at] + f' s="{style_id}"' + cell_xml[insert_at:]
+
+    return re.sub(r"<c\b[^>]*(?:/>|>.*?</c>)", replace_cell, sheet_text, flags=re.DOTALL)
+
+
+def _ooxml_child_elements(parent: ET.Element, local_name: str) -> list[ET.Element]:
+    return list(parent.findall(_ooxml_qname(OOXML_MAIN_NS, local_name)))
+
+
+def _ooxml_ensure_styles_child(root: ET.Element, local_name: str) -> ET.Element:
+    child = root.find(_ooxml_qname(OOXML_MAIN_NS, local_name))
+    if child is not None:
+        return child
+    child = ET.Element(_ooxml_qname(OOXML_MAIN_NS, local_name), {"count": "0"})
+    root.append(child)
+    return child
+
+
+def _ooxml_update_count(element: ET.Element) -> None:
+    element.attrib["count"] = str(len(list(element)))
+
+
+def _ooxml_ensure_hyperlink_font(fonts: ET.Element, base_font: ET.Element | None) -> int:
+    desired = copy.deepcopy(base_font) if base_font is not None else ET.Element(_ooxml_qname(OOXML_MAIN_NS, "font"))
+    color = desired.find(_ooxml_qname(OOXML_MAIN_NS, "color"))
+    if color is None:
+        color = ET.Element(_ooxml_qname(OOXML_MAIN_NS, "color"))
+        desired.append(color)
+    color.attrib.clear()
+    color.attrib["rgb"] = "FF0563C1"
+    if desired.find(_ooxml_qname(OOXML_MAIN_NS, "u")) is None:
+        desired.append(ET.Element(_ooxml_qname(OOXML_MAIN_NS, "u")))
+
+    desired_xml = ET.tostring(desired, encoding="utf-8")
+    for index, font in enumerate(list(fonts)):
+        if ET.tostring(font, encoding="utf-8") == desired_xml:
+            return index
+    fonts.append(desired)
+    _ooxml_update_count(fonts)
+    return len(list(fonts)) - 1
+
+
+def _ooxml_ensure_hyperlink_xf(cell_xfs: ET.Element, base_xf: ET.Element | None, font_id: int) -> int:
+    desired = copy.deepcopy(base_xf) if base_xf is not None else ET.Element(_ooxml_qname(OOXML_MAIN_NS, "xf"))
+    desired.attrib["fontId"] = str(font_id)
+    desired.attrib["applyFont"] = "1"
+    desired_xml = ET.tostring(desired, encoding="utf-8")
+    for index, xf in enumerate(list(cell_xfs)):
+        if ET.tostring(xf, encoding="utf-8") == desired_xml:
+            return index
+    cell_xfs.append(desired)
+    _ooxml_update_count(cell_xfs)
+    return len(list(cell_xfs)) - 1
+
+
+def _ooxml_patch_styles_for_hyperlinks(
+    styles_xml: bytes,
+    base_style_ids: set[int],
+) -> tuple[bytes, dict[int, int]]:
+    if not base_style_ids:
+        return styles_xml, {}
+    root = ET.fromstring(styles_xml)
+    fonts = _ooxml_ensure_styles_child(root, "fonts")
+    cell_xfs = _ooxml_ensure_styles_child(root, "cellXfs")
+    font_list = _ooxml_child_elements(fonts, "font")
+    xf_list = _ooxml_child_elements(cell_xfs, "xf")
+    if not xf_list:
+        cell_xfs.append(ET.Element(_ooxml_qname(OOXML_MAIN_NS, "xf"), {"fontId": "0", "fillId": "0", "borderId": "0", "numFmtId": "0"}))
+        _ooxml_update_count(cell_xfs)
+        xf_list = _ooxml_child_elements(cell_xfs, "xf")
+
+    style_map: dict[int, int] = {}
+    for base_style_id in sorted(base_style_ids):
+        base_xf = xf_list[base_style_id] if 0 <= base_style_id < len(xf_list) else xf_list[0]
+        try:
+            base_font_id = int(base_xf.attrib.get("fontId", "0"))
+        except ValueError:
+            base_font_id = 0
+        base_font = font_list[base_font_id] if 0 <= base_font_id < len(font_list) else (font_list[0] if font_list else None)
+        hyperlink_font_id = _ooxml_ensure_hyperlink_font(fonts, base_font)
+        font_list = _ooxml_child_elements(fonts, "font")
+        style_map[base_style_id] = _ooxml_ensure_hyperlink_xf(cell_xfs, base_xf, hyperlink_font_id)
+        xf_list = _ooxml_child_elements(cell_xfs, "xf")
+
+    xml_text = _ooxml_xml_bytes(root).decode("utf-8")
+    xml_text = _ooxml_repair_ignorable_namespaces(xml_text, "styleSheet")
+    return xml_text.encode("utf-8"), style_map
+
+
 def _ooxml_patch_sheet_hyperlinks(
     sheet_xml: bytes,
     rels_xml: bytes | None,
     links_by_address: dict[str, str],
+    style_by_address: dict[str, int] | None = None,
 ) -> tuple[bytes, bytes]:
     sheet_text = sheet_xml.decode("utf-8-sig")
     sheet_text = _ooxml_repair_ignorable_namespace_declarations(sheet_text)
@@ -1844,6 +1987,7 @@ def _ooxml_patch_sheet_hyperlinks(
             },
         )
     sheet_text = _ooxml_add_sheet_hyperlinks(sheet_text, rel_ids_by_address, rel_prefix)
+    sheet_text = _ooxml_set_cell_style_ids(sheet_text, style_by_address or {})
     sheet_text = _ooxml_repair_ignorable_namespace_declarations(sheet_text)
     return sheet_text.encode("utf-8"), _ooxml_xml_bytes(rels_root)
 
@@ -1895,18 +2039,43 @@ def write_links_with_ooxml(
     count = 0
     with zipfile.ZipFile(workbook_path, "r") as workbook_zip:
         sheet_map = _ooxml_workbook_sheet_map(workbook_zip)
+        workbook_names = set(workbook_zip.namelist())
+        sheet_payloads: list[tuple[str, bytes, bytes | None, dict[str, str], dict[str, int]]] = []
+        base_style_ids: set[int] = set()
         replacements: dict[str, bytes] = {}
         for sheet_name, links_by_address in links_by_sheet.items():
             sheet_xml_path = sheet_map.get(sheet_name)
             if not sheet_xml_path:
                 continue
             rels_path = _ooxml_sheet_rels_path(sheet_xml_path)
-            rels_xml = workbook_zip.read(rels_path) if rels_path in workbook_zip.namelist() else None
+            rels_xml = workbook_zip.read(rels_path) if rels_path in workbook_names else None
+            sheet_xml = workbook_zip.read(sheet_xml_path)
+            style_ids = _ooxml_collect_cell_style_ids(
+                sheet_xml.decode("utf-8-sig"),
+                set(links_by_address),
+            )
+            base_style_ids.update(style_ids.values())
+            sheet_payloads.append((sheet_xml_path, sheet_xml, rels_xml, links_by_address, style_ids))
+
+        styles_by_base_id: dict[int, int] = {}
+        if base_style_ids and "xl/styles.xml" in workbook_names:
+            patched_styles, styles_by_base_id = _ooxml_patch_styles_for_hyperlinks(
+                workbook_zip.read("xl/styles.xml"),
+                base_style_ids,
+            )
+            replacements["xl/styles.xml"] = patched_styles
+
+        for sheet_xml_path, sheet_xml, rels_xml, links_by_address, style_ids in sheet_payloads:
             sheet_xml, new_rels_xml = _ooxml_patch_sheet_hyperlinks(
-                workbook_zip.read(sheet_xml_path),
+                sheet_xml,
                 rels_xml,
                 links_by_address,
+                {
+                    address: styles_by_base_id.get(base_style_id, base_style_id)
+                    for address, base_style_id in style_ids.items()
+                },
             )
+            rels_path = _ooxml_sheet_rels_path(sheet_xml_path)
             replacements[sheet_xml_path] = sheet_xml
             replacements[rels_path] = new_rels_xml
             count += len(links_by_address)
