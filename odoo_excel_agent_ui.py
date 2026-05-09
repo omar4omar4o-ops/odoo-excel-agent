@@ -566,9 +566,10 @@ class AgentControlApp:
         guide = self._create_card(parent, row=0, column=1, style_name="CardAlt.TFrame")
         self._add_section_header(guide, "What Happens", "The one-click run keeps your workflow safe.", alt=True)
         guide_points = (
-            "Reads workbook-specific columns (N\u00b0FACTURE, N commandes, MTT DE FACTURE, or legacy headers).",
+            "Reads workbook-specific columns (N\u00b0FACTURE, N COMMANDE, or legacy headers).",
             "ACHATS LOCAL tries N\u00b0FACTURE first, then N commandes if the first value is not found.",
-            "Uses workbook-specific lookup rules (Reference commande, Total, or partner_ref).",
+            "ACHATS ETRANGER searches Odoo from N COMMANDE, not the amount.",
+            "Uses workbook-specific lookup rules (Reference commande with partner_ref fallback, or legacy partner_ref).",
             "Silent mode waits for open workbooks to close before writing.",
             "Creates a backup before writing hyperlinks.",
         )
@@ -876,7 +877,7 @@ class AgentControlApp:
         lines: list[str] = []
         for label, raw_path, required_header in (
             ("ACHATS LOCAL", self._normalized_achats_local_file(), "N\u00b0FACTURE or N commandes"),
-            ("ACHATS ETRANGER", self._normalized_achats_etranger_file(), "MTT DE FACTURE"),
+            ("ACHATS ETRANGER", self._normalized_achats_etranger_file(), "N COMMANDE"),
             ("Seller / Previous", self._normalized_seller_previous_file(), "legacy seller headers"),
         ):
             if not raw_path:

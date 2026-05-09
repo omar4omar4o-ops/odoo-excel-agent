@@ -54,15 +54,15 @@ class RuleSelectionTests(unittest.TestCase):
         self.assertEqual(rule.headers, LOCAL_HEADER_VARIANTS | LOCAL_COMMAND_HEADER_VARIANTS)
         self.assertTrue(rule.row_fallback_on_not_found)
 
-    def test_etranger_workbook_uses_total_lookup(self) -> None:
+    def test_etranger_workbook_uses_n_commande_lookup(self) -> None:
         rule = workbook_rule_for_path(Path(r"C:\tmp\TRACKING ACHATS ETRANGER (1).xlsx"))
-        self.assertEqual(rule.lookup_mode, LOOKUP_MODE_TOTAL_AMOUNT)
-        self.assertEqual(rule.headers, ETRANGER_TOTAL_HEADER_VARIANTS)
+        self.assertEqual(rule.lookup_mode, LOOKUP_MODE_COMMAND_REF)
+        self.assertEqual(rule.headers, LOCAL_COMMAND_HEADER_VARIANTS)
 
-    def test_etranger_slot_forces_total_lookup_for_renamed_workbook(self) -> None:
+    def test_etranger_slot_forces_n_commande_lookup_for_renamed_workbook(self) -> None:
         rule = workbook_rule_for_slot(WORKBOOK_SLOT_ACHATS_ETRANGER, Path(r"C:\tmp\Renamed Copy.xlsx"))
-        self.assertEqual(rule.lookup_mode, LOOKUP_MODE_TOTAL_AMOUNT)
-        self.assertEqual(rule.headers, ETRANGER_TOTAL_HEADER_VARIANTS)
+        self.assertEqual(rule.lookup_mode, LOOKUP_MODE_COMMAND_REF)
+        self.assertEqual(rule.headers, LOCAL_COMMAND_HEADER_VARIANTS)
         self.assertFalse(rule.row_fallback_on_not_found)
 
     def test_other_workbooks_keep_legacy_lookup(self) -> None:
@@ -369,7 +369,7 @@ class HyperlinkWriteTests(unittest.TestCase):
 
 @unittest.skipIf(Workbook is None, "openpyxl is not installed")
 class LocalFallbackScanTests(unittest.TestCase):
-    def test_etranger_slot_scan_ignores_n_commande_and_reads_only_mtt_de_facture(self) -> None:
+    def test_etranger_slot_scan_reads_only_n_commande_and_ignores_mtt_de_facture(self) -> None:
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -381,6 +381,7 @@ class LocalFallbackScanTests(unittest.TestCase):
             sheet["H1"] = "MTT DE FACTURE"
             sheet["C2"] = "SA2026000002942"
             sheet["H2"] = 3542.87
+            sheet["C3"] = "=SUBTOTAL(103,Table1[N COMMANDE])"
             workbook.save(workbook_path)
 
             rule = workbook_rule_for_slot(WORKBOOK_SLOT_ACHATS_ETRANGER, workbook_path)
@@ -388,9 +389,9 @@ class LocalFallbackScanTests(unittest.TestCase):
 
         self.assertEqual(scan_result.issue_code, "")
         self.assertEqual(len(scan_result.cells), 1)
-        self.assertEqual(scan_result.cells[0].order_name, "3542.87")
-        self.assertEqual(scan_result.cells[0].address, "H2")
-        self.assertEqual(scan_result.cells[0].header_name, "mtt de facture")
+        self.assertEqual(scan_result.cells[0].order_name, "SA2026000002942")
+        self.assertEqual(scan_result.cells[0].address, "C2")
+        self.assertEqual(scan_result.cells[0].header_name, "n commande")
 
     def test_local_scan_collects_both_headers_and_uses_secondary_when_primary_not_found(self) -> None:
         import tempfile

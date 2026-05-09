@@ -372,10 +372,10 @@ def _achats_local_workbook_rule() -> WorkbookRule:
 
 def _achats_etranger_workbook_rule() -> WorkbookRule:
     return WorkbookRule(
-        header_groups=(frozenset(ETRANGER_TOTAL_HEADER_VARIANTS),),
-        lookup_mode=LOOKUP_MODE_TOTAL_AMOUNT,
+        header_groups=(frozenset(ETRANGER_HEADER_VARIANTS),),
+        lookup_mode=LOOKUP_MODE_COMMAND_REF,
         workbook_label="ACHATS ETRANGER",
-        required_header_examples=("MTT DE FACTURE",),
+        required_header_examples=("N COMMANDE",),
     )
 
 
@@ -1134,6 +1134,8 @@ def _collect_row_fallback_cells(
 
 def _is_candidate_value(value: str) -> bool:
     if not value:
+        return False
+    if value.strip().startswith("="):
         return False
     return value.casefold() not in {"none", "nan"}
 

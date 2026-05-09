@@ -1,0 +1,19 @@
+Rows tested: 289
+Unique refs tested: 287
+Mismatch existing ref links: 0
+
+Status counts:
+- ACHATS_ETRANGER linked: 23
+- ACHATS_ETRANGER not_found: 11
+- ACHATS_LOCAL linked: 151
+- ACHATS_LOCAL not_found: 104
+
+Matched fields:
+- ACHATS_ETRANGER partner_ref: 22
+- ACHATS_ETRANGER x_studio_description_dossier: 1
+- ACHATS_LOCAL partner_ref: 151
+
+Existing link places:
+- ACHATS_ETRANGER other_cell: 23
+- ACHATS_ETRANGER ref_cell: 7
+- ACHATS_LOCAL ref_cell: 146
