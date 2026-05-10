@@ -39,6 +39,7 @@ from link_odoo_vendor_bills import (
     WorkbookProcessSummary,
     WORKBOOK_SLOT_ACHATS_ETRANGER,
     WORKBOOK_SLOT_ACHATS_LOCAL,
+    WORKBOOK_SLOT_CUSTOM_PREFIX,
     WORKBOOK_SLOT_SELLER_PREVIOUS,
     PERFORMANCE_MODE_LIVE,
     PERFORMANCE_MODE_SILENT,
@@ -138,6 +139,7 @@ class ProcessingSettings:
     write_report_file: bool
     stable_backup_name: bool
     config_path: Path
+    extra_workbooks: list[dict[str, str]]
 
 
 @dataclass(frozen=True)
@@ -225,6 +227,9 @@ def load_agent_config(config_path: Path) -> AgentConfig:
     achats_local_file = expand_path(background["achats_local_file"]) if str(background.get("achats_local_file") or "").strip() else None
     achats_etranger_file = expand_path(background["achats_etranger_file"]) if str(background.get("achats_etranger_file") or "").strip() else None
     seller_previous_file = expand_path(background["seller_previous_file"]) if str(background.get("seller_previous_file") or "").strip() else None
+    extra_workbooks = background.get("extra_workbooks", [])
+    if not isinstance(extra_workbooks, list):
+        extra_workbooks = []
     return AgentConfig(
         odoo=OdooSettings(
             url=str(odoo_raw.get("url") or "").strip(),
@@ -260,6 +265,7 @@ def load_agent_config(config_path: Path) -> AgentConfig:
             write_report_file=bool(background["write_report_file"]),
             stable_backup_name=bool(background["stable_backup_name"]),
             config_path=config_path,
+            extra_workbooks=extra_workbooks,
         ),
     )
 
@@ -942,6 +948,19 @@ class OdooExcelAgent:
         for slot, candidate in slot_paths:
             if candidate is not None and candidate.expanduser().resolve() == resolved:
                 return slot
+        # Check extra workbooks for custom slot
+        for entry in self.config.processing.extra_workbooks:
+            if not isinstance(entry, dict):
+                continue
+            raw_file = str(entry.get("file") or "").strip()
+            odoo_field = str(entry.get("odoo_field") or "").strip()
+            if not raw_file or not odoo_field:
+                continue
+            try:
+                if expand_path(raw_file).expanduser().resolve() == resolved:
+                    return f"{WORKBOOK_SLOT_CUSTOM_PREFIX}{odoo_field}"
+            except Exception:
+                continue
         return ""
 
     def _resolve_watch_roots(self) -> tuple[list[tuple[Path, bool]], list[str]]:

@@ -75,6 +75,7 @@ LOOKUP_MODE_GLOBAL_TEXT = "global_text"
 WORKBOOK_SLOT_ACHATS_LOCAL = "achats_local"
 WORKBOOK_SLOT_ACHATS_ETRANGER = "achats_etranger"
 WORKBOOK_SLOT_SELLER_PREVIOUS = "seller_previous"
+WORKBOOK_SLOT_CUSTOM_PREFIX = "custom:"
 DEFAULT_AMOUNT_TOLERANCES = (0.01, 0.05, 0.50)
 ODOO_RPC_MAX_ATTEMPTS = 3
 ODOO_RPC_RETRY_BASE_SECONDS = 0.75
@@ -511,6 +512,18 @@ def _legacy_default_workbook_rule() -> WorkbookRule:
     )
 
 
+def _custom_field_workbook_rule(odoo_field: str) -> WorkbookRule:
+    """Create a WorkbookRule for a custom file that searches a specific Odoo field."""
+    return WorkbookRule(
+        header_groups=(frozenset(ALL_HEADER_VARIANTS),),
+        lookup_mode=LOOKUP_MODE_COMMAND_REF,
+        row_fallback_on_not_found=True,
+        global_search_on_not_found=True,
+        workbook_label=f"Custom ({odoo_field})",
+        required_header_examples=("N commandes", "N commande", "N\u00b0FACTURE"),
+    )
+
+
 def workbook_rule_for_slot(slot: str, workbook_path: Path | None = None) -> WorkbookRule:
     normalized = str(slot or "").strip().casefold()
     if normalized == WORKBOOK_SLOT_ACHATS_LOCAL:
@@ -519,6 +532,10 @@ def workbook_rule_for_slot(slot: str, workbook_path: Path | None = None) -> Work
         return _achats_etranger_workbook_rule()
     if normalized == WORKBOOK_SLOT_SELLER_PREVIOUS:
         return _seller_previous_workbook_rule()
+    if normalized.startswith(WORKBOOK_SLOT_CUSTOM_PREFIX):
+        odoo_field = normalized[len(WORKBOOK_SLOT_CUSTOM_PREFIX):].strip()
+        if odoo_field:
+            return _custom_field_workbook_rule(odoo_field)
     if workbook_path is not None:
         return workbook_rule_for_path(workbook_path)
     return _legacy_default_workbook_rule()

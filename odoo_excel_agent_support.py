@@ -49,6 +49,7 @@ SELECTED_WORKBOOK_KEYS = (
     "achats_etranger_file",
     "seller_previous_file",
 )
+WORKBOOK_SLOT_CUSTOM_PREFIX = "custom:"
 
 
 class AgentCredentialError(RuntimeError):
@@ -192,6 +193,27 @@ def achats_slot_for_path(raw_value: Any) -> str:
     return ""
 
 
+def normalize_extra_workbooks(raw_value: Any) -> list[dict[str, str]]:
+    """Normalize the extra_workbooks list from config."""
+    if not isinstance(raw_value, list):
+        return []
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw_value:
+        if not isinstance(item, dict):
+            continue
+        raw_file = str(item.get("file") or "").strip()
+        odoo_field = str(item.get("odoo_field") or "").strip()
+        if not raw_file or not odoo_field:
+            continue
+        normalized_file = str(expand_path(raw_file))
+        if normalized_file in seen:
+            continue
+        seen.add(normalized_file)
+        result.append({"file": normalized_file, "odoo_field": odoo_field})
+    return result
+
+
 def default_config(install_dir: Path) -> dict[str, Any]:
     paths = default_runtime_paths(install_dir)
     return {
@@ -212,6 +234,7 @@ def default_config(install_dir: Path) -> dict[str, Any]:
             "achats_local_file": "",
             "achats_etranger_file": "",
             "seller_previous_file": "",
+            "extra_workbooks": [],
             "watch_file": "",
             "watch_folder": default_watch_folder(),
             "recursive": False,
@@ -267,7 +290,8 @@ def load_normalized_config(config_path: Path) -> tuple[dict[str, Any], list[str]
     achats_local_file = normalize_optional_path(background_raw.get("achats_local_file"))
     achats_etranger_file = normalize_optional_path(background_raw.get("achats_etranger_file"))
     seller_previous_file = normalize_optional_path(background_raw.get("seller_previous_file"))
-    has_selected_config = bool(achats_local_file or achats_etranger_file or seller_previous_file)
+    extra_workbooks = normalize_extra_workbooks(background_raw.get("extra_workbooks", []))
+    has_selected_config = bool(achats_local_file or achats_etranger_file or seller_previous_file or extra_workbooks)
     excel_session_backend = normalize_excel_session_backend(background_raw.get("excel_session_backend"), messages)
     performance_mode = normalize_performance_mode(background_raw.get("performance_mode"))
     live_mode = performance_mode == PERFORMANCE_MODE_LIVE
@@ -335,6 +359,7 @@ def load_normalized_config(config_path: Path) -> tuple[dict[str, Any], list[str]
         "achats_local_file": achats_local_file,
         "achats_etranger_file": achats_etranger_file,
         "seller_previous_file": seller_previous_file,
+        "extra_workbooks": extra_workbooks,
         "watch_file": watch_file,
         "watch_folder": watch_folder,
         "recursive": bool(background_raw.get("recursive", processing_raw.get("recursive", False))),
@@ -402,6 +427,18 @@ def get_background_watch_targets(config: dict[str, Any]) -> list[Path]:
             if not raw_target:
                 continue
             target = expand_path(raw_target)
+            if target in seen:
+                continue
+            seen.add(target)
+            targets.append(target)
+        # Include extra workbooks in the watch targets
+        for entry in background.get("extra_workbooks", []):
+            if not isinstance(entry, dict):
+                continue
+            raw_file = str(entry.get("file") or "").strip()
+            if not raw_file:
+                continue
+            target = expand_path(raw_file)
             if target in seen:
                 continue
             seen.add(target)

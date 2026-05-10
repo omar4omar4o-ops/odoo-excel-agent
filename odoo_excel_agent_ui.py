@@ -1,4 +1,4 @@
-﻿"""Desktop UI for configuring and controlling the Odoo Excel background agent."""
+"""Desktop UI for configuring and controlling the Odoo Excel background agent."""
 
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ from link_odoo_vendor_bills import (
     prepare_backup_dir_layout,
     WORKBOOK_SLOT_ACHATS_ETRANGER,
     WORKBOOK_SLOT_ACHATS_LOCAL,
+    WORKBOOK_SLOT_CUSTOM_PREFIX,
     WORKBOOK_SLOT_SELLER_PREVIOUS,
     is_supported_workbook,
     process_workbook,
@@ -329,6 +330,8 @@ class AgentControlApp:
         self.stable_backup_var = StringVar(value="1")
         self.settle_seconds_var = StringVar(value="15")
         self.retry_seconds_var = StringVar(value="45")
+        self.extra_workbooks: list[dict[str, str]] = []
+        self._extra_workbooks_widgets: list[ctk.CTkFrame] = []
 
         self._build_ui()
         self.watch_mode_var.trace_add("write", lambda *_: self._sync_watch_mode_ui())
@@ -632,6 +635,28 @@ class AgentControlApp:
         self._add_entry_row(target, "Settle seconds", self.settle_seconds_var)
         self._add_entry_row(target, "Retry delay seconds", self.retry_seconds_var)
 
+        # Custom workbooks section
+        custom_card = self._create_card(parent, row=2, column=0, columnspan=2, padding=(12, 12, 12, 10))
+        self._add_section_header(
+            custom_card,
+            "Custom Workbooks",
+            "Add extra Excel files to monitor. Specify the Odoo field name to search in (e.g. partner_ref, name, ref, origin).",
+        )
+        add_bar = ctk.CTkFrame(custom_card, fg_color="transparent")
+        add_bar.pack(fill="x", padx=14, pady=(0, 8))
+        ctk.CTkButton(
+            add_bar,
+            text="+ Add Custom File",
+            width=160,
+            height=34,
+            fg_color=p["accent"],
+            hover_color=p["accent_deep"],
+            text_color="#ffffff",
+            command=self._add_custom_workbook_dialog,
+        ).pack(side="left")
+        self._extra_workbooks_container = ctk.CTkFrame(custom_card, fg_color="transparent")
+        self._extra_workbooks_container.pack(fill="x", padx=14, pady=(0, 10))
+
         behavior = self._create_card(parent, row=0, column=1, style_name="CardAlt.TFrame")
         self._add_section_header(behavior, "Behavior", "Startup scanning, live updates, visibility, reporting, and backup strategy.", alt=True)
         mode_row = ctk.CTkFrame(behavior, fg_color="transparent")
@@ -883,6 +908,111 @@ class AgentControlApp:
             self.seller_previous_file_var.set(selected)
             self._refresh_overview_cards()
 
+    def _add_custom_workbook_dialog(self) -> None:
+        selected = filedialog.askopenfilename(
+            initialdir=str(Path.home()),
+            filetypes=[("Excel files", "*.xlsx *.xlsm *.xls"), ("All files", "*.*")],
+        )
+        if not selected:
+            return
+        # Ask for the Odoo field name
+        dialog = ctk.CTkInputDialog(
+            text="Enter the Odoo field name to search in\n(e.g. partner_ref, name, ref, origin, invoice_origin):",
+            title="Odoo Field Name",
+        )
+        odoo_field = (dialog.get_input() or "").strip()
+        if not odoo_field:
+            messagebox.showwarning(APP_NAME, "No Odoo field name was provided. The file was not added.")
+            return
+        normalized_file = str(expand_path(selected))
+        # Check for duplicates
+        for entry in self.extra_workbooks:
+            if str(entry.get("file") or "").strip() == normalized_file:
+                messagebox.showwarning(APP_NAME, f"This file is already in the custom workbooks list:\n{Path(normalized_file).name}")
+                return
+        self.extra_workbooks.append({"file": normalized_file, "odoo_field": odoo_field})
+        self._rebuild_extra_workbooks_ui()
+        self._refresh_overview_cards()
+        self.append_status(f"Added custom workbook: {Path(normalized_file).name} (field: {odoo_field})")
+
+    def _remove_custom_workbook(self, index: int) -> None:
+        if 0 <= index < len(self.extra_workbooks):
+            removed = self.extra_workbooks.pop(index)
+            self._rebuild_extra_workbooks_ui()
+            self._refresh_overview_cards()
+            self.append_status(f"Removed custom workbook: {Path(removed.get('file', '')).name}")
+
+    def _rebuild_extra_workbooks_ui(self) -> None:
+        for widget in self._extra_workbooks_widgets:
+            widget.destroy()
+        self._extra_workbooks_widgets.clear()
+        p = self.palette
+        for idx, entry in enumerate(self.extra_workbooks):
+            raw_file = str(entry.get("file") or "").strip()
+            odoo_field = str(entry.get("odoo_field") or "").strip()
+            file_name = Path(raw_file).name if raw_file else "?"
+            row_frame = ctk.CTkFrame(self._extra_workbooks_container, fg_color=p["card_alt"], corner_radius=8, border_width=1, border_color=p["border"])
+            row_frame.pack(fill="x", pady=3)
+            ctk.CTkLabel(
+                row_frame,
+                text=f"{file_name}",
+                font=ctk.CTkFont(size=12, weight="bold"),
+                text_color=p["ink"],
+            ).pack(side="left", padx=(10, 6), pady=6)
+            ctk.CTkLabel(
+                row_frame,
+                text=f"→ {odoo_field}",
+                font=ctk.CTkFont(size=11),
+                text_color=p["accent"],
+            ).pack(side="left", padx=(0, 10), pady=6)
+            ctk.CTkLabel(
+                row_frame,
+                text=self._compact_path(raw_file, keep_segments=3),
+                font=ctk.CTkFont(size=10),
+                text_color=p["muted"],
+            ).pack(side="left", fill="x", expand=True, padx=(0, 10), pady=6)
+            capture_idx = idx
+            ctk.CTkButton(
+                row_frame,
+                text="Process",
+                width=70,
+                height=26,
+                fg_color=p["accent"],
+                hover_color=p["accent_deep"],
+                text_color="#ffffff",
+                font=ctk.CTkFont(size=11),
+                command=lambda i=capture_idx: self._process_custom_workbook(i),
+            ).pack(side="right", padx=(0, 6), pady=4)
+            ctk.CTkButton(
+                row_frame,
+                text="Remove",
+                width=70,
+                height=26,
+                fg_color=p["danger"],
+                hover_color="#dc2626",
+                text_color="#ffffff",
+                font=ctk.CTkFont(size=11),
+                command=lambda i=capture_idx: self._remove_custom_workbook(i),
+            ).pack(side="right", padx=(0, 6), pady=4)
+            self._extra_workbooks_widgets.append(row_frame)
+
+    def _process_custom_workbook(self, index: int) -> None:
+        if index < 0 or index >= len(self.extra_workbooks):
+            return
+        entry = self.extra_workbooks[index]
+        raw_file = str(entry.get("file") or "").strip()
+        odoo_field = str(entry.get("odoo_field") or "").strip()
+        if not raw_file or not odoo_field:
+            messagebox.showerror(APP_NAME, "Invalid custom workbook entry.")
+            return
+        workbook = Path(raw_file)
+        if not workbook.exists() or not workbook.is_file():
+            messagebox.showerror(APP_NAME, f"Custom workbook does not exist:\n{workbook}")
+            return
+        slot = f"{WORKBOOK_SLOT_CUSTOM_PREFIX}{odoo_field}"
+        self.manual_file_var.set(str(workbook))
+        self._process_workbook_path(workbook, source_label=f"Custom ({odoo_field})", workbook_slot=slot)
+
     def choose_manual_file(self) -> None:
         selected = filedialog.askopenfilename(
             initialdir=str(Path.home()),
@@ -910,6 +1040,10 @@ class AgentControlApp:
         ):
             if raw_value:
                 paths.append(raw_value)
+        for entry in self.extra_workbooks:
+            raw_file = str(entry.get("file") or "").strip()
+            if raw_file:
+                paths.append(raw_file)
         return paths
 
     def _watch_target_status_lines(self) -> list[str]:
@@ -929,11 +1063,27 @@ class AgentControlApp:
                 lines.append(f"{label}: missing file ({required_header})")
             else:
                 lines.append(f"{label}: invalid folder")
+        for entry in self.extra_workbooks:
+            raw_file = str(entry.get("file") or "").strip()
+            odoo_field = str(entry.get("odoo_field") or "").strip()
+            label = f"Custom ({odoo_field})"
+            if not raw_file:
+                lines.append(f"{label}: not configured")
+                continue
+            path = Path(raw_file)
+            if path.exists() and path.is_file():
+                lines.append(f"{label}: ready for background watch")
+            elif path.parent.exists() and path.parent.is_dir():
+                lines.append(f"{label}: missing file")
+            else:
+                lines.append(f"{label}: invalid folder")
         return lines
 
     def _refresh_overview_cards(self, runtime: Any | None = None, status_text: str | None = None) -> None:
         configured = self._configured_selected_workbooks()
-        target_value = f"{len(configured)}/3 selected workbooks"
+        extra_count = len(self.extra_workbooks)
+        total_slots = 3 + extra_count
+        target_value = f"{len(configured)}/{total_slots} selected workbooks"
         detail_lines = self._watch_target_status_lines()
         if configured:
             detail_lines.extend(self._compact_path(path, keep_segments=4) for path in configured)
@@ -1086,6 +1236,7 @@ class AgentControlApp:
         config["background"]["achats_local_file"] = self._normalized_achats_local_file()
         config["background"]["achats_etranger_file"] = self._normalized_achats_etranger_file()
         config["background"]["seller_previous_file"] = self._normalized_seller_previous_file()
+        config["background"]["extra_workbooks"] = list(self.extra_workbooks)
         config["background"]["watch_file"] = ""
         config["background"]["watch_folder"] = default_watch_folder()
         config["background"]["recursive"] = False
@@ -1130,6 +1281,8 @@ class AgentControlApp:
         self.achats_local_file_var.set(str(background.get("achats_local_file") or ""))
         self.achats_etranger_file_var.set(str(background.get("achats_etranger_file") or ""))
         self.seller_previous_file_var.set(str(background.get("seller_previous_file") or ""))
+        self.extra_workbooks = list(background.get("extra_workbooks", []))
+        self._rebuild_extra_workbooks_ui()
         self.watch_file_var.set(str(background.get("watch_file") or ""))
         self.watch_folder_var.set(str(background.get("watch_folder") or default_watch_folder()))
         self.backup_dir_var.set(str(config.get("paths", {}).get("backup_dir") or self._install_dir() / "backups"))
@@ -1270,6 +1423,16 @@ class AgentControlApp:
                 continue
             if not workbook.parent.exists() or not workbook.parent.is_dir():
                 raise ValueError(f"Workbook parent folder does not exist: {workbook.parent}")
+        for entry in self.extra_workbooks:
+            raw_file = str(entry.get("file") or "").strip()
+            odoo_field = str(entry.get("odoo_field") or "").strip()
+            if not raw_file:
+                continue
+            if not odoo_field:
+                raise ValueError(f"Custom workbook '{Path(raw_file).name}' is missing the Odoo field name.")
+            workbook = Path(raw_file)
+            if not is_supported_workbook(workbook):
+                raise ValueError(f"Custom workbook has invalid type: {workbook.name}")
 
     def _validate_manual_file(self) -> Path:
         workbook = Path(self.manual_file_var.get().strip())
