@@ -16,6 +16,7 @@ from odoo_excel_agent_support import (
     DEFAULT_UPDATE_URL,
     WATCH_MODE_SELECTED_WORKBOOKS,
     WATCH_MODE_FILE,
+    WATCH_MODE_FOLDER,
     default_config,
     get_background_watch_targets,
     launch_frozen_subprocess,
@@ -24,10 +25,10 @@ from odoo_excel_agent_support import (
 
 
 class OdooExcelAgentSupportTests(unittest.TestCase):
-    def test_default_config_uses_selected_workbooks_mode(self) -> None:
+    def test_default_config_uses_folder_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             config = default_config(Path(tmpdir))
-        self.assertEqual(config["background"]["watch_mode"], WATCH_MODE_SELECTED_WORKBOOKS)
+        self.assertEqual(config["background"]["watch_mode"], WATCH_MODE_FOLDER)
         self.assertEqual(config["background"]["achats_local_file"], "")
         self.assertEqual(config["background"]["achats_etranger_file"], "")
         self.assertEqual(config["background"]["seller_previous_file"], "")
@@ -140,7 +141,7 @@ class OdooExcelAgentSupportTests(unittest.TestCase):
 
             normalized, messages = load_normalized_config(config_path)
 
-        self.assertEqual(normalized["background"]["watch_mode"], WATCH_MODE_SELECTED_WORKBOOKS)
+        self.assertEqual(normalized["background"]["watch_mode"], WATCH_MODE_FOLDER)
         self.assertTrue(any("unreadable" in message for message in messages))
 
     def test_load_normalized_config_keeps_unknown_legacy_file_mode(self) -> None:
@@ -175,6 +176,7 @@ class OdooExcelAgentSupportTests(unittest.TestCase):
             config["background"]["achats_local_file"] = str(local_path)
             config["background"]["achats_etranger_file"] = str(etranger_path)
             config["background"]["seller_previous_file"] = str(seller_path)
+            config["background"]["watch_mode"] = WATCH_MODE_SELECTED_WORKBOOKS
 
             targets = get_background_watch_targets(config)
 

@@ -1,4 +1,4 @@
-﻿import unittest
+import unittest
 import xmlrpc.client
 from pathlib import Path
 from unittest.mock import patch
@@ -92,7 +92,7 @@ class RuleSelectionTests(unittest.TestCase):
 
     def test_other_workbooks_keep_legacy_lookup(self) -> None:
         rule = workbook_rule_for_path(Path(r"C:\tmp\Anything Else.xlsx"))
-        self.assertEqual(rule.lookup_mode, LOOKUP_MODE_PARTNER_REF)
+        self.assertEqual(rule.lookup_mode, LOOKUP_MODE_COMMAND_REF)
         self.assertEqual(rule.headers, ALL_HEADER_VARIANTS)
 
 

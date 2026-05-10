@@ -26,7 +26,7 @@ from link_odoo_vendor_bills import (
 
 APP_NAME = "Odoo Excel Agent"
 APP_DIR_NAME = "OdooExcelAgent"
-APP_VERSION = "2026.05.09.12"
+APP_VERSION = "2026.05.09.13"
 UI_WINDOW_TITLE = "Odoo Excel Agent Control Center"
 UI_SINGLETON_MUTEX_PREFIX = "Local\\OdooExcelAgentUi"
 DEFAULT_UPDATE_URL = "https://api.github.com/repos/omar4omar4o-ops/odoo-excel-agent/releases/latest"
@@ -34,7 +34,7 @@ AGENT_SCRIPT = "odoo_excel_background.py"
 UI_SCRIPT = "odoo_excel_agent_ui.py"
 STARTUP_SHORTCUT = Path(os.getenv("APPDATA", str(Path.home()))) / "Microsoft/Windows/Start Menu/Programs/Startup/Odoo Excel Agent.lnk"
 DEFAULT_INSTALL_DIR = Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / APP_DIR_NAME
-DEFAULT_SETTLE_SECONDS = 15
+DEFAULT_SETTLE_SECONDS = 2
 DEFAULT_RETRY_DELAY_SECONDS = 45
 DEFAULT_EXCEL_SAVE_DEBOUNCE_SECONDS = 1
 CONFIG_VERSION = 4
