@@ -863,14 +863,14 @@ class OdooExcelAgent:
 
     def _should_ignore(self, path: Path) -> bool:
         resolved = path.expanduser().resolve()
-        exact_targets = self._exact_watch_targets()
+        resolved_exact_targets = {t.expanduser().resolve() for t in self._exact_watch_targets() if t is not None}
         if self.config.processing.watch_mode in {WATCH_MODE_FILE, WATCH_MODE_SELECTED_WORKBOOKS}:
-            if resolved not in exact_targets:
+            if resolved not in resolved_exact_targets:
                 return True
         name = path.name
         if name.startswith("~$"):
             return True
-        explicitly_watched = resolved in exact_targets
+        explicitly_watched = resolved in resolved_exact_targets
         if not explicitly_watched and (".backup-" in name or ".odoo-link-report-" in name or ".original." in name):
             return True
         if not is_supported_workbook(path):
