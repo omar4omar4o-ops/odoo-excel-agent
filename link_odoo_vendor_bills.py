@@ -490,10 +490,20 @@ def _achats_etranger_workbook_rule() -> WorkbookRule:
 
 def _seller_previous_workbook_rule() -> WorkbookRule:
     return WorkbookRule(
+        header_groups=(frozenset(LOCAL_COMMAND_HEADER_VARIANTS),),
+        lookup_mode=LOOKUP_MODE_COMMAND_REF,
+        global_search_on_not_found=True,
+        workbook_label="Seller / Previous workbook",
+        required_header_examples=("N commandes", "N commande"),
+    )
+
+
+def _legacy_default_workbook_rule() -> WorkbookRule:
+    return WorkbookRule(
         header_groups=(frozenset(ALL_HEADER_VARIANTS),),
         lookup_mode=LOOKUP_MODE_PARTNER_REF,
-        workbook_label="Seller / Previous workbook",
-        required_header_examples=("N commandes", "N commande", "N°FACTURE"),
+        workbook_label="Workbook",
+        required_header_examples=("N commandes", "N commande", "N\u00b0FACTURE"),
     )
 
 
@@ -507,7 +517,7 @@ def workbook_rule_for_slot(slot: str, workbook_path: Path | None = None) -> Work
         return _seller_previous_workbook_rule()
     if workbook_path is not None:
         return workbook_rule_for_path(workbook_path)
-    return _seller_previous_workbook_rule()
+    return _legacy_default_workbook_rule()
 
 
 def workbook_rule_for_path(workbook_path: Path) -> WorkbookRule:
@@ -516,7 +526,7 @@ def workbook_rule_for_path(workbook_path: Path) -> WorkbookRule:
         return _achats_local_workbook_rule()
     if workbook_name == ETRANGER_WORKBOOK_FILE_NAME:
         return _achats_etranger_workbook_rule()
-    return _seller_previous_workbook_rule()
+    return _legacy_default_workbook_rule()
 
 
 def cell_address(row: int, col: int) -> str:

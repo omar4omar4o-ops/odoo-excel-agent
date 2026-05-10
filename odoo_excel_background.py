@@ -57,8 +57,10 @@ from odoo_excel_agent_support import (
     get_background_watch_targets,
     get_runtime_status_path,
     get_paths,
+    launch_frozen_subprocess,
     load_normalized_config,
     read_secret,
+    UI_WINDOW_TITLE,
     write_runtime_status,
     WATCH_MODE_ACHATS_PAIR,
     WATCH_MODE_FILE,
@@ -74,6 +76,9 @@ MENU_OPEN_LOG = 1002
 MENU_OPEN_BACKUPS = 1003
 MENU_SCAN_NOW = 1004
 MENU_EXIT = 1005
+LOCK_RETRY_DELAY_SECONDS = 2.0
+FILE_CHANGE_RETRY_DELAY_SECONDS = 1.0
+FAST_CLOSE_PROCESSING_DELAY_SECONDS = 1.0
 
 
 def is_retryable_odoo_runtime_message(message: str) -> bool:
@@ -689,6 +694,8 @@ class OdooExcelAgent:
         self.pending_lock = threading.Lock()
         self.pending: dict[Path, float] = {}
         self.force_pending: set[Path] = set()
+        self.close_detected_pending: set[Path] = set()
+        self.lock_states: dict[Path, bool] = {}
         self.last_poll_at = 0.0
         self.worker_thread = threading.Thread(target=self._worker_loop, name="WorkbookWorker", daemon=True)
         self.event_monitor = ExcelEventMonitor(self) if self.config.processing.excel_event_monitoring else None
@@ -729,18 +736,30 @@ class OdooExcelAgent:
         runtime_status(self.config, "stopped", "Background watcher stopped.")
 
     def open_ui(self) -> None:
-        if getattr(sys, "frozen", False):
-            args = [sys.executable, "--config", str(self.config.processing.config_path)]
-            cwd = str(Path(sys.executable).parent)
-        else:
-            ui_script = self.config.processing.config_path.parent / "odoo_excel_agent_ui.py"
-            args = [current_pythonw(), str(ui_script), "--config", str(self.config.processing.config_path)]
-            cwd = self.config.processing.config_path.parent
-        subprocess.Popen(
-            args,
-            cwd=cwd,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        try:
+            if getattr(sys, "frozen", False):
+                launch_frozen_subprocess(
+                    ["--config", str(self.config.processing.config_path)],
+                    cwd=Path(sys.executable).parent,
+                    visible_window=True,
+                )
+            else:
+                ui_script = self.config.processing.config_path.parent / "odoo_excel_agent_ui.py"
+                subprocess.Popen(
+                    [current_pythonw(), str(ui_script), "--config", str(self.config.processing.config_path)],
+                    cwd=str(self.config.processing.config_path.parent),
+                    creationflags=0,
+                )
+        except Exception as exc:
+            self.logger.error("Failed to open UI: %s", exc)
+            runtime_status(
+                self.config,
+                "running",
+                f"Failed to open {UI_WINDOW_TITLE}.",
+                last_issue_code="ui_launch_failed",
+                last_issue_message=str(exc),
+            )
+            self.tray.show_notification(APP_NAME, "Failed to open the setup UI. Check the log.")
 
     def open_log(self) -> None:
         os.startfile(str(self.config.processing.log_file))
@@ -763,6 +782,48 @@ class OdooExcelAgent:
                     self.schedule_path(watch_target, "scan_now", delay_override=0, force=True)
         runtime_status(self.config, "running", "Manual scan queued.")
         self.tray.show_notification(APP_NAME, "Scan queued.")
+
+    def _path_is_locked(self, path: Path) -> bool:
+        return has_excel_lock_marker(path) or not can_open_exclusively(path)
+
+    def _retry_delay_seconds(self, code: str) -> float:
+        if code in {
+            "waiting_for_close",
+            "excel_waiting_close",
+            "excel_read_only",
+            "excel_autosave_deferred",
+            "excel_ambiguous_instance",
+            "excel_backend_unavailable",
+        }:
+            return LOCK_RETRY_DELAY_SECONDS
+        if code in {"file_changing", "file_unavailable"}:
+            return FILE_CHANGE_RETRY_DELAY_SECONDS
+        return float(self.config.processing.retry_delay_seconds)
+
+    def _track_watch_target_lock_transition(self, path: Path, fingerprint: dict[str, int]) -> None:
+        normalized = path.expanduser().resolve()
+        current_locked = self._path_is_locked(path)
+        previous_locked = self.lock_states.get(normalized)
+        self.lock_states[normalized] = current_locked
+        if previous_locked is True and not current_locked and not self.state.is_processed(normalized, fingerprint):
+            with self.pending_lock:
+                already_pending = normalized in self.pending
+            if not already_pending:
+                self.schedule_path(
+                    normalized,
+                    "excel_closed_ready",
+                    delay_override=FAST_CLOSE_PROCESSING_DELAY_SECONDS,
+                    force=True,
+                    debounce=True,
+                )
+            self.logger.info("Detected workbook close for %s; queued immediate processing.", normalized)
+            runtime_status(
+                self.config,
+                "running",
+                f"Detected workbook close for {path.name}. Processing now.",
+                last_issue_code="close_detected_processing",
+                last_issue_message=path.name,
+            )
 
     def schedule_path(
         self,
@@ -789,6 +850,8 @@ class OdooExcelAgent:
                 self.pending[normalized] = due_at
             if force:
                 self.force_pending.add(normalized)
+            if reason in {"excel_closed_ready", "excel_before_close"}:
+                self.close_detected_pending.add(normalized)
         self.work_event.set()
         self.logger.info("Queued workbook: %s (%s)", normalized, reason)
 
@@ -815,17 +878,18 @@ class OdooExcelAgent:
     def _worker_loop(self) -> None:
         while not self.stop_event.is_set():
             self._poll_watch_targets_if_needed()
-            due_paths: list[tuple[Path, bool]] = []
+            due_paths: list[tuple[Path, bool, bool]] = []
             now = time.time()
             with self.pending_lock:
                 for path, due_at in list(self.pending.items()):
                     if due_at <= now:
-                        due_paths.append((path, path in self.force_pending))
+                        due_paths.append((path, path in self.force_pending, path in self.close_detected_pending))
                         del self.pending[path]
                         self.force_pending.discard(path)
-            for path, force in due_paths:
+                        self.close_detected_pending.discard(path)
+            for path, force, close_detected in due_paths:
                 try:
-                    self._process_path(path, force=force)
+                    self._process_path(path, force=force, close_detected=close_detected)
                 except Exception:
                     self.logger.exception("Unhandled error while processing %s", path)
                     runtime_status(
@@ -854,6 +918,7 @@ class OdooExcelAgent:
                 fingerprint = file_fingerprint(watch_target)
             except OSError:
                 continue
+            self._track_watch_target_lock_transition(watch_target, fingerprint)
             normalized = watch_target.expanduser().resolve()
             with self.pending_lock:
                 already_pending = normalized in self.pending
@@ -937,7 +1002,9 @@ class OdooExcelAgent:
                 continue
             try:
                 fingerprint = file_fingerprint(watch_target)
-                self.state.mark_processed(watch_target.expanduser().resolve(), fingerprint)
+                normalized = watch_target.expanduser().resolve()
+                self.state.mark_processed(normalized, fingerprint)
+                self.lock_states[normalized] = self._path_is_locked(watch_target)
                 self.logger.info("Baseline recorded for watched file: %s", watch_target)
             except OSError:
                 self.logger.info("Could not record initial baseline for watched file yet: %s", watch_target)
@@ -957,7 +1024,7 @@ class OdooExcelAgent:
             message = f"{message} {warning_text}"
         return message
 
-    def _process_path(self, path: Path, *, force: bool = False) -> None:
+    def _process_path(self, path: Path, *, force: bool = False, close_detected: bool = False) -> None:
         if self._should_ignore(path):
             return
         if not path.exists():
@@ -972,7 +1039,7 @@ class OdooExcelAgent:
 
         silent_mode = self.config.processing.performance_mode != PERFORMANCE_MODE_LIVE
         if silent_mode:
-            workbook_is_locked = has_excel_lock_marker(path) or not can_open_exclusively(path)
+            workbook_is_locked = self._path_is_locked(path)
             if workbook_is_locked:
                 self._retry_later(
                     path,
@@ -1009,7 +1076,7 @@ class OdooExcelAgent:
             self._retry_later(path, "Workbook is open in multiple Excel instances. Waiting for it to close.", "excel_ambiguous_instance")
             return
         elif access.status == "unsupported_live_update":
-            workbook_is_locked = has_excel_lock_marker(path) or not can_open_exclusively(path)
+            workbook_is_locked = self._path_is_locked(path)
             if workbook_is_locked:
                 reason = access.details or "Live Excel monitoring is unavailable while the workbook is still open."
                 self._retry_later(path, reason, "excel_backend_unavailable")
@@ -1017,7 +1084,7 @@ class OdooExcelAgent:
             # Not locked, treat as closed.
             access = WorkbookAccessContext(status="closed", workbook_path=path, backend=access.backend)
         elif access.status == "closed":
-            workbook_is_locked = has_excel_lock_marker(path) or not can_open_exclusively(path)
+            workbook_is_locked = self._path_is_locked(path)
             if workbook_is_locked and not self.config.processing.update_open_workbook:
                 self._retry_later(path, "Workbook is still locked. Waiting for it to close.", "excel_waiting_close")
                 return
@@ -1025,7 +1092,7 @@ class OdooExcelAgent:
         # --- Stability checks only for closed workbooks ---
         if access.status == "closed":
             age_seconds = time.time() - path.stat().st_mtime
-            if age_seconds < self.config.processing.settle_seconds:
+            if not close_detected and age_seconds < self.config.processing.settle_seconds:
                 self._retry_later(path, "Workbook is still changing.", "file_changing")
                 return
             try:
@@ -1117,7 +1184,7 @@ class OdooExcelAgent:
         self.tray.show_notification(APP_NAME, message)
 
     def _retry_later(self, path: Path, reason: str, code: str) -> None:
-        due_at = time.time() + self.config.processing.retry_delay_seconds
+        due_at = time.time() + self._retry_delay_seconds(code)
         with self.pending_lock:
             self.pending[path] = due_at
         self.logger.info("Retry scheduled for %s: %s", path, reason)
@@ -1159,22 +1226,23 @@ def status_path_from_config_arg(config_path: Path) -> Path:
         return expand_path(config_path).parent / "runtime_status.json"
 
 
-def open_setup_ui(config_path: Path) -> None:
+def open_setup_ui(config_path: Path) -> tuple[bool, str]:
     try:
         if getattr(sys, "frozen", False):
-            subprocess.Popen(
-                [sys.executable, "--config", str(config_path)],
-                cwd=str(Path(sys.executable).parent),
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            launch_frozen_subprocess(
+                ["--config", str(config_path)],
+                cwd=Path(sys.executable).parent,
+                visible_window=True,
             )
-            return
+            return True, ""
         subprocess.Popen(
             [current_pythonw(), str(Path(__file__).with_name("odoo_excel_agent_ui.py")), "--config", str(config_path)],
             cwd=str(Path(__file__).parent),
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            creationflags=0,
         )
-    except Exception:
-        pass
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
 
 
 def main(argv: list[str]) -> int:
@@ -1186,7 +1254,16 @@ def main(argv: list[str]) -> int:
         config = load_agent_config(config_path)
     except AgentCredentialError as exc:
         write_runtime_status(status_path, "startup_failed", str(exc), updated_at=timestamp(), last_issue_code="missing_api_key")
-        open_setup_ui(config_path)
+        launched, launch_error = open_setup_ui(config_path)
+        if not launched:
+            write_runtime_status(
+                status_path,
+                "startup_failed",
+                f"{exc} Also failed to open the setup UI.",
+                updated_at=timestamp(),
+                last_issue_code="ui_launch_failed",
+                last_issue_message=launch_error,
+            )
         return 2
     except Exception as exc:
         lowered = str(exc).lower()
@@ -1198,6 +1275,17 @@ def main(argv: list[str]) -> int:
             else "startup_failed"
         )
         write_runtime_status(status_path, code, str(exc), updated_at=timestamp(), last_issue_code=code)
+        if code in {"invalid_watch_target", "invalid_odoo_settings", "startup_failed"}:
+            launched, launch_error = open_setup_ui(config_path)
+            if not launched:
+                write_runtime_status(
+                    status_path,
+                    "startup_failed",
+                    f"{exc} Also failed to open the setup UI.",
+                    updated_at=timestamp(),
+                    last_issue_code="ui_launch_failed",
+                    last_issue_message=launch_error,
+                )
         return 2
 
     logger = configure_logging(config.processing.log_file)
@@ -1223,6 +1311,16 @@ def main(argv: list[str]) -> int:
         code = "odoo_auth_failed" if "authentication failed" in message.lower() else "startup_failed"
         runtime_status(config, code, message, last_issue_code=code, last_issue_message=message)
         logger.error("Startup/runtime error: %s", message)
+        if code in {"odoo_auth_failed", "startup_failed"}:
+            launched, launch_error = open_setup_ui(config.processing.config_path)
+            if not launched:
+                runtime_status(
+                    config,
+                    "startup_failed",
+                    f"{message} Also failed to open the setup UI.",
+                    last_issue_code="ui_launch_failed",
+                    last_issue_message=launch_error,
+                )
         return 2
     except Exception:
         formatted = traceback.format_exc()

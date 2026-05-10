@@ -2,6 +2,8 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from link_odoo_vendor_bills import (
     ETRANGER_WORKBOOK_FILE_NAME,
@@ -10,11 +12,13 @@ from link_odoo_vendor_bills import (
     PERFORMANCE_MODE_SILENT,
 )
 from odoo_excel_agent_support import (
+    clean_pyinstaller_env,
     DEFAULT_UPDATE_URL,
     WATCH_MODE_SELECTED_WORKBOOKS,
     WATCH_MODE_FILE,
     default_config,
     get_background_watch_targets,
+    launch_frozen_subprocess,
     load_normalized_config,
 )
 
@@ -175,6 +179,60 @@ class OdooExcelAgentSupportTests(unittest.TestCase):
             targets = get_background_watch_targets(config)
 
         self.assertEqual(targets, [local_path.resolve(), etranger_path.resolve(), seller_path.resolve()])
+
+    def test_clean_pyinstaller_env_resets_embedded_runtime_state(self) -> None:
+        cleaned = clean_pyinstaller_env(
+            {
+                "_PYI_APPLICATION_HOME_DIR": "temp",
+                "_PYI_PARENT_PROCESS_LEVEL": "1",
+                "_MEIPASS2": "legacy",
+                "PATH": "x",
+            }
+        )
+        self.assertEqual(cleaned["PYINSTALLER_RESET_ENVIRONMENT"], "1")
+        self.assertEqual(cleaned["PATH"], "x")
+        self.assertNotIn("_PYI_APPLICATION_HOME_DIR", cleaned)
+        self.assertNotIn("_PYI_PARENT_PROCESS_LEVEL", cleaned)
+        self.assertNotIn("_MEIPASS2", cleaned)
+
+    def test_launch_frozen_subprocess_uses_clean_env_and_health_check(self) -> None:
+        recorded: dict[str, object] = {}
+
+        class FakeProcess:
+            def poll(self) -> None:
+                return None
+
+        def fake_popen(args: list[str], **kwargs: object) -> FakeProcess:
+            recorded["args"] = args
+            recorded["kwargs"] = kwargs
+            return FakeProcess()
+
+        with patch("odoo_excel_agent_support.subprocess.Popen", side_effect=fake_popen), patch(
+            "odoo_excel_agent_support.sys.executable",
+            str(Path(r"C:\tmp\OdooExcelAgent.exe")),
+        ):
+            process = launch_frozen_subprocess(["--run-background", "--config", "C:\\tmp\\config.json"], visible_window=False)
+
+        self.assertIsInstance(process, FakeProcess)
+        self.assertEqual(
+            recorded["args"],
+            [str(Path(r"C:\tmp\OdooExcelAgent.exe")), "--run-background", "--config", "C:\\tmp\\config.json"],
+        )
+        env = recorded["kwargs"]["env"]
+        self.assertEqual(env["PYINSTALLER_RESET_ENVIRONMENT"], "1")
+        self.assertEqual(recorded["kwargs"]["creationflags"], getattr(__import__("subprocess"), "CREATE_NO_WINDOW", 0))
+
+    def test_launch_frozen_subprocess_raises_when_child_exits_immediately(self) -> None:
+        class FakeProcess:
+            def poll(self) -> int:
+                return 7
+
+        with patch("odoo_excel_agent_support.subprocess.Popen", return_value=FakeProcess()), patch(
+            "odoo_excel_agent_support.sys.executable",
+            str(Path(r"C:\tmp\OdooExcelAgent.exe")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Failed to launch OdooExcelAgent.exe"):
+                launch_frozen_subprocess(["--config", "C:\\tmp\\config.json"], visible_window=True, check_startup_seconds=0.2)
 
 
 if __name__ == "__main__":

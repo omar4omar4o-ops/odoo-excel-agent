@@ -5,6 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
+import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -23,7 +26,9 @@ from link_odoo_vendor_bills import (
 
 APP_NAME = "Odoo Excel Agent"
 APP_DIR_NAME = "OdooExcelAgent"
-APP_VERSION = "2026.05.09.8"
+APP_VERSION = "2026.05.09.10"
+UI_WINDOW_TITLE = "Odoo Excel Agent Control Center"
+UI_SINGLETON_MUTEX_PREFIX = "Local\\OdooExcelAgentUi"
 DEFAULT_UPDATE_URL = "https://api.github.com/repos/omar4omar4o-ops/odoo-excel-agent/releases/latest"
 AGENT_SCRIPT = "odoo_excel_background.py"
 UI_SCRIPT = "odoo_excel_agent_ui.py"
@@ -464,3 +469,49 @@ def write_runtime_status(
     tmp_path = status_path.with_suffix(status_path.suffix + ".tmp")
     tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     tmp_path.replace(status_path)
+
+
+def ui_singleton_mutex_name(config_path: Path) -> str:
+    digest = hashlib.sha1(str(expand_path(config_path)).encode("utf-8")).hexdigest()[:12]
+    return f"{UI_SINGLETON_MUTEX_PREFIX}:{digest}"
+
+
+def clean_pyinstaller_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
+    env = dict(base_env or os.environ)
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    for key in list(env):
+        upper = key.upper()
+        if upper.startswith("_PYI") or key == "_MEIPASS2":
+            env.pop(key, None)
+    return env
+
+
+def launch_frozen_subprocess(
+    arguments: list[str],
+    *,
+    cwd: Path | None = None,
+    visible_window: bool,
+    check_startup_seconds: float = 2.5,
+) -> subprocess.Popen[Any]:
+    executable = Path(sys.executable).resolve()
+    creationflags = 0 if visible_window else getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    process = subprocess.Popen(
+        [str(executable), *arguments],
+        cwd=str((cwd or executable.parent).resolve()),
+        env=clean_pyinstaller_env(),
+        close_fds=True,
+        creationflags=creationflags,
+    )
+    deadline = time.time() + max(float(check_startup_seconds), 0.0)
+    while time.time() < deadline:
+        exit_code = process.poll()
+        if exit_code is None:
+            time.sleep(0.1)
+            continue
+        if exit_code == 0:
+            return process
+        raise RuntimeError(
+            f"Failed to launch {executable.name} (exit code {exit_code}). "
+            "The packaged runtime did not start correctly."
+        )
+    return process

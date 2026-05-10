@@ -5,6 +5,7 @@ import zipfile
 from pathlib import Path
 
 from odoo_excel_updater import (
+    _powershell_update_script,
     check_for_update,
     compare_versions,
     parse_update_manifest,
@@ -101,6 +102,12 @@ class UpdaterTests(unittest.TestCase):
                 prepare_update_payload(archive, root / "staging")
 
             self.assertFalse((root / "evil" / "OdooExcelAgent.exe").exists())
+
+    def test_powershell_update_script_resets_pyinstaller_environment(self) -> None:
+        script = _powershell_update_script()
+        self.assertIn('PYINSTALLER_RESET_ENVIRONMENT', script)
+        self.assertIn('StartsWith("_PYI"', script)
+        self.assertIn('ProcessStartInfo', script)
 
 
 if __name__ == "__main__":

@@ -20,7 +20,12 @@ from typing import Any
 import customtkinter as ctk
 
 import pythoncom
+import win32api
+import win32con
 import win32com.client  # type: ignore[import-not-found]
+import win32event
+import win32gui
+import winerror
 
 from link_odoo_vendor_bills import (
     DEFAULT_EXCEL_SAVE_DEBOUNCE_SECONDS,
@@ -51,6 +56,7 @@ from odoo_excel_agent_support import (
     delete_secret,
     expand_path,
     get_runtime_status_path,
+    launch_frozen_subprocess,
     load_normalized_config,
     make_credential_target,
     normalize_excel_session_backend,
@@ -58,6 +64,8 @@ from odoo_excel_agent_support import (
     read_secret,
     save_normalized_config,
     store_secret,
+    UI_WINDOW_TITLE,
+    ui_singleton_mutex_name,
     WATCH_MODE_ACHATS_PAIR,
     WATCH_MODE_SELECTED_WORKBOOKS,
 )
@@ -115,6 +123,34 @@ def missing_runtime_dependencies() -> list[str]:
         if importlib.util.find_spec(module_name) is None:
             missing.append(package_name)
     return missing
+
+
+def focus_existing_ui_window() -> bool:
+    matching: list[int] = []
+
+    def _enum(hwnd: int, _: Any) -> None:
+        try:
+            if not win32gui.IsWindowVisible(hwnd):
+                return
+            title = win32gui.GetWindowText(hwnd)
+            if title == UI_WINDOW_TITLE:
+                matching.append(hwnd)
+        except Exception:
+            return
+
+    win32gui.EnumWindows(_enum, None)
+    if not matching:
+        return False
+    hwnd = matching[0]
+    try:
+        if win32gui.IsIconic(hwnd):
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        else:
+            win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+        win32gui.SetForegroundWindow(hwnd)
+        return True
+    except Exception:
+        return False
 
 
 class UiRuntime:
@@ -193,10 +229,10 @@ class UiRuntime:
     @staticmethod
     def start_agent_process(target_pythonw: str, install_dir: Path, config_path: Path) -> None:
         if getattr(sys, "frozen", False):
-            subprocess.Popen(
-                [sys.executable, "--run-background", "--config", str(config_path)],
-                cwd=str(Path(sys.executable).parent),
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            launch_frozen_subprocess(
+                ["--run-background", "--config", str(config_path)],
+                cwd=Path(sys.executable).parent,
+                visible_window=False,
             )
         else:
             subprocess.Popen(
@@ -209,7 +245,7 @@ class UiRuntime:
 class AgentControlApp:
     def __init__(self, root: ctk.CTk, config_arg: str = "") -> None:
         self.root = root
-        self.root.title("Odoo Excel Agent Control Center")
+        self.root.title(UI_WINDOW_TITLE)
 
         self.screen_width = root.winfo_screenwidth()
         self.screen_height = root.winfo_screenheight()
@@ -567,11 +603,12 @@ class AgentControlApp:
         guide = self._create_card(parent, row=0, column=1, style_name="CardAlt.TFrame")
         self._add_section_header(guide, "What Happens", "The one-click run keeps your workflow safe.", alt=True)
         guide_points = (
-            "Reads workbook-specific columns (N\u00b0FACTURE, N COMMANDE, or legacy headers).",
+            "Reads workbook-specific columns (N\u00b0FACTURE or N COMMANDE, depending on the selected workbook slot).",
             "ACHATS LOCAL tries N\u00b0FACTURE first, then N commandes if the first value is not found.",
             "If ACHATS LOCAL is not found in purchase orders, it runs a fast priority search in accessible Odoo records.",
             "ACHATS ETRANGER searches from N COMMANDE and falls back to the same fast global Odoo search when purchase orders are not enough.",
-            "Uses workbook-specific lookup rules (Reference commande with partner_ref fallback, or legacy partner_ref).",
+            "Seller / Previous also searches from N COMMANDE and falls back to the same fast global Odoo search.",
+            "Uses workbook-specific lookup rules (Reference commande with partner_ref fallback, or legacy partner_ref for generic files).",
             "Silent mode waits for open workbooks to close before writing.",
             "Writes .xlsx/.xlsm hyperlinks with direct OOXML patching and stores original snapshots in a hidden backup subfolder.",
         )
@@ -880,7 +917,7 @@ class AgentControlApp:
         for label, raw_path, required_header in (
             ("ACHATS LOCAL", self._normalized_achats_local_file(), "N\u00b0FACTURE or N commandes"),
             ("ACHATS ETRANGER", self._normalized_achats_etranger_file(), "N COMMANDE"),
-            ("Seller / Previous", self._normalized_seller_previous_file(), "legacy seller headers"),
+            ("Seller / Previous", self._normalized_seller_previous_file(), "N COMMANDE"),
         ):
             if not raw_path:
                 lines.append(f"{label}: not configured")
@@ -1533,6 +1570,8 @@ class AgentControlApp:
             if processes:
                 if runtime.last_issue_code in {"waiting_for_close", "excel_waiting_close", "excel_read_only", "excel_autosave_deferred", "excel_ambiguous_instance"}:
                     status_text = "Waiting for Excel"
+                elif runtime.last_issue_code == "close_detected_processing":
+                    status_text = "Processing Close"
                 elif runtime.last_issue_code == "excel_backend_unavailable":
                     status_text = "Excel backend issue"
                 elif runtime.last_issue_code == "missing_required_header":
@@ -1549,6 +1588,7 @@ class AgentControlApp:
                     "odoo_auth_failed": "Odoo auth failed",
                     "invalid_watch_folder": "Invalid watch target",
                     "invalid_watch_target": "Invalid watch target",
+                    "ui_launch_failed": "UI launch failed",
                     "startup_failed": "Startup failed",
                     "stopped": "Stopped",
                     "running": "Stopped",
@@ -1630,11 +1670,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
+    config_path = expand_path(args.config) if args.config else (DEFAULT_INSTALL_DIR / "config.json")
+    ui_mutex = win32event.CreateMutex(None, False, ui_singleton_mutex_name(config_path))
+    if win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS:
+        focus_existing_ui_window()
+        return 0
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("dark-blue")
     root = ctk.CTk()
     app = AgentControlApp(root, config_arg=args.config)
     root.mainloop()
+    del ui_mutex
     return 0
 
 

@@ -24,6 +24,7 @@ from link_odoo_vendor_bills import (
     OdooClient,
     PurchaseLinkResult,
     WORKBOOK_SLOT_ACHATS_ETRANGER,
+    WORKBOOK_SLOT_SELLER_PREVIOUS,
     WorkbookOrderCell,
     _GLOBAL_SEARCH_FIELDS_CACHE,
     _ooxml_patch_sheet_hyperlinks,
@@ -77,6 +78,13 @@ class RuleSelectionTests(unittest.TestCase):
 
     def test_etranger_slot_forces_n_commande_lookup_for_renamed_workbook(self) -> None:
         rule = workbook_rule_for_slot(WORKBOOK_SLOT_ACHATS_ETRANGER, Path(r"C:\tmp\Renamed Copy.xlsx"))
+        self.assertEqual(rule.lookup_mode, LOOKUP_MODE_COMMAND_REF)
+        self.assertEqual(rule.headers, LOCAL_COMMAND_HEADER_VARIANTS)
+        self.assertFalse(rule.row_fallback_on_not_found)
+        self.assertTrue(rule.global_search_on_not_found)
+
+    def test_seller_previous_slot_forces_n_commande_lookup(self) -> None:
+        rule = workbook_rule_for_slot(WORKBOOK_SLOT_SELLER_PREVIOUS, Path(r"C:\tmp\L'ETAT DES COMMANDES.xlsx"))
         self.assertEqual(rule.lookup_mode, LOOKUP_MODE_COMMAND_REF)
         self.assertEqual(rule.headers, LOCAL_COMMAND_HEADER_VARIANTS)
         self.assertFalse(rule.row_fallback_on_not_found)
@@ -322,11 +330,24 @@ class ResolveModeTests(unittest.TestCase):
         self.assertEqual(results["FA2026000045"].status, "linked")
         self.assertEqual(results["FA2026000045"].source_model, "account.move")
 
+    def test_seller_previous_n_commande_can_fallback_to_global_search(self) -> None:
+        client = GlobalSearchFakeClient()
+        results = resolve_orders(
+            ["FA2026000045"],
+            client,  # type: ignore[arg-type]
+            lookup_mode=LOOKUP_MODE_COMMAND_REF,
+            global_search_on_not_found=workbook_rule_for_slot(
+                WORKBOOK_SLOT_SELLER_PREVIOUS,
+                Path(r"C:\tmp\L'ETAT DES COMMANDES.xlsx"),
+            ).global_search_on_not_found,
+        )
+        self.assertEqual(results["FA2026000045"].status, "linked")
+        self.assertEqual(results["FA2026000045"].source_model, "account.move")
+
     def test_global_fallback_updates_not_found_note_when_everything_fails(self) -> None:
         class AlwaysMissingClient(OdooClient):
             def __init__(self, url: str = "https://sphe.cloudoo.ma", db: str = "db", login: str = "login", api_key: str = "key") -> None:
                 super().__init__(url, db, login, api_key)
-                self.models_proxy = object()
 
             def authenticate(self) -> int:
                 self.uid = 1
@@ -341,7 +362,7 @@ class ResolveModeTests(unittest.TestCase):
             def search_purchase_orders_by_partner_ref(self, ref: str, operator: str) -> list[dict]:
                 return []
 
-            def execute_models(self, model: str, method: str, args: list | None = None, kwargs: dict | None = None) -> Any:
+            def _call(self, model: str, method: str, args: list, kwargs: dict | None = None) -> Any:
                 if model == "ir.model":
                     return [{"model": "account.move", "name": "Journal Entry"}]
                 if method == "fields_get":
@@ -622,6 +643,29 @@ class LocalFallbackScanTests(unittest.TestCase):
         self.assertEqual(scan_result.cells[0].order_name, "SA2026000002942")
         self.assertEqual(scan_result.cells[0].address, "C2")
         self.assertEqual(scan_result.cells[0].header_name, "n commande")
+
+    def test_seller_previous_slot_scan_reads_only_n_commande(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workbook_path = Path(tmpdir) / "L'ETAT DES COMMANDES.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.title = "Feuil1"
+            sheet["B1"] = "N commandes"
+            sheet["C1"] = "N°FACTURE"
+            sheet["B2"] = "FA202603527"
+            sheet["C2"] = "FA-IGNORED-BY-SELLER-SLOT"
+            workbook.save(workbook_path)
+
+            rule = workbook_rule_for_slot(WORKBOOK_SLOT_SELLER_PREVIOUS, workbook_path)
+            scan_result = scan_workbook_orders_from_file(workbook_path, visible_excel=False, workbook_rule=rule)
+
+        self.assertEqual(scan_result.issue_code, "")
+        self.assertEqual(len(scan_result.cells), 1)
+        self.assertEqual(scan_result.cells[0].order_name, "FA202603527")
+        self.assertEqual(scan_result.cells[0].address, "B2")
+        self.assertEqual(scan_result.cells[0].header_name, "n commandes")
 
     def test_local_scan_collects_both_headers_and_uses_secondary_when_primary_not_found(self) -> None:
         import tempfile

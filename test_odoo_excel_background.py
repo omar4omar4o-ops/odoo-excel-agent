@@ -1,8 +1,10 @@
 import tempfile
+import threading
 import unittest
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from link_odoo_vendor_bills import WORKBOOK_SLOT_ACHATS_ETRANGER
 from odoo_excel_agent_support import WATCH_MODE_SELECTED_WORKBOOKS
@@ -137,7 +139,7 @@ class BackgroundWatchFilteringTests(unittest.TestCase):
             config_path.write_text(json.dumps(payload), encoding="utf-8")
             original_open_setup_ui = odoo_excel_background.open_setup_ui
             opened: list[Path] = []
-            odoo_excel_background.open_setup_ui = lambda path: opened.append(path)
+            odoo_excel_background.open_setup_ui = lambda path: (opened.append(path) or True, "")
             try:
                 exit_code = odoo_excel_background.main(["--config", str(config_path)])
             finally:
@@ -154,6 +156,45 @@ class BackgroundWatchFilteringTests(unittest.TestCase):
         self.assertTrue(is_retryable_odoo_runtime_message("Odoo is temporarily overloaded"))
         self.assertTrue(is_retryable_odoo_runtime_message("Gateway Timeout"))
         self.assertFalse(is_retryable_odoo_runtime_message("Odoo database not found"))
+
+    def test_retry_delay_shortcuts_waiting_for_close_and_file_changing(self) -> None:
+        agent = self._make_agent((), Path("C:/tmp/reports"), Path("C:/tmp/backups"))
+        agent.config.processing.retry_delay_seconds = 45
+
+        self.assertEqual(agent._retry_delay_seconds("waiting_for_close"), 2.0)
+        self.assertEqual(agent._retry_delay_seconds("excel_waiting_close"), 2.0)
+        self.assertEqual(agent._retry_delay_seconds("file_changing"), 1.0)
+        self.assertEqual(agent._retry_delay_seconds("odoo_unavailable"), 45.0)
+
+    def test_lock_release_queues_immediate_processing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workbook = root / "TRACKING ACHATS ETRANGER (1).xlsx"
+            workbook.write_bytes(b"stub")
+            agent = self._make_agent((workbook,), root / "reports", root / "backups")
+            agent.pending_lock = threading.Lock()
+            agent.pending = {}
+            agent.force_pending = set()
+            agent.close_detected_pending = set()
+            agent.lock_states = {workbook.resolve(): True}
+            agent.state = SimpleNamespace(is_processed=lambda path, fingerprint: False)
+            agent.logger = SimpleNamespace(info=lambda *args, **kwargs: None)
+            scheduled: list[tuple[Path, str, float | None, bool, bool]] = []
+
+            def fake_schedule(path: Path, reason: str, *, delay_override=None, force=False, debounce=False) -> None:
+                scheduled.append((path, reason, delay_override, force, debounce))
+
+            agent.schedule_path = fake_schedule
+            agent._path_is_locked = lambda path: False
+
+            with patch("odoo_excel_background.runtime_status") as runtime_status_mock:
+                agent._track_watch_target_lock_transition(workbook, {"size": 4, "mtime_ns": 1})
+
+            self.assertEqual(len(scheduled), 1)
+            self.assertEqual(scheduled[0][1], "excel_closed_ready")
+            self.assertEqual(scheduled[0][2], 1.0)
+            self.assertTrue(scheduled[0][3])
+            self.assertTrue(runtime_status_mock.called)
 
 
 if __name__ == "__main__":

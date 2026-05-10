@@ -301,6 +301,19 @@ if (Test-Path -LiteralPath $CurrentExe) {
 Copy-Item -Path (Join-Path $PayloadDir "*") -Destination $InstallDir -Recurse -Force
 
 if ($Restart -eq "1") {
-    Start-Process -FilePath $CurrentExe -ArgumentList @("--config", $ConfigPath) -WorkingDirectory $InstallDir
+    $restartExe = Join-Path $InstallDir "OdooExcelAgent.exe"
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $restartExe
+    $psi.WorkingDirectory = $InstallDir
+    $psi.UseShellExecute = $false
+    $null = $psi.ArgumentList.Add("--config")
+    $null = $psi.ArgumentList.Add($ConfigPath)
+    $psi.Environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    foreach ($key in @($psi.Environment.Keys)) {
+        if ($key -eq "_MEIPASS2" -or $key.StartsWith("_PYI", [System.StringComparison]::OrdinalIgnoreCase)) {
+            $psi.Environment.Remove($key)
+        }
+    }
+    [System.Diagnostics.Process]::Start($psi) | Out-Null
 }
 '''
