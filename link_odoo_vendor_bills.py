@@ -503,7 +503,9 @@ def _seller_previous_workbook_rule() -> WorkbookRule:
 def _legacy_default_workbook_rule() -> WorkbookRule:
     return WorkbookRule(
         header_groups=(frozenset(ALL_HEADER_VARIANTS),),
-        lookup_mode=LOOKUP_MODE_PARTNER_REF,
+        lookup_mode=LOOKUP_MODE_COMMAND_REF,
+        row_fallback_on_not_found=True,
+        global_search_on_not_found=True,
         workbook_label="Workbook",
         required_header_examples=("N commandes", "N commande", "N\u00b0FACTURE"),
     )

@@ -26,7 +26,7 @@ from link_odoo_vendor_bills import (
 
 APP_NAME = "Odoo Excel Agent"
 APP_DIR_NAME = "OdooExcelAgent"
-APP_VERSION = "2026.05.09.11"
+APP_VERSION = "2026.05.09.12"
 UI_WINDOW_TITLE = "Odoo Excel Agent Control Center"
 UI_SINGLETON_MUTEX_PREFIX = "Local\\OdooExcelAgentUi"
 DEFAULT_UPDATE_URL = "https://api.github.com/repos/omar4omar4o-ops/odoo-excel-agent/releases/latest"
@@ -207,7 +207,7 @@ def default_config(install_dir: Path) -> dict[str, Any]:
             "last_file": "",
         },
         "background": {
-            "watch_mode": WATCH_MODE_SELECTED_WORKBOOKS,
+            "watch_mode": WATCH_MODE_FOLDER,
             "performance_mode": PERFORMANCE_MODE_SILENT,
             "achats_local_file": "",
             "achats_etranger_file": "",
