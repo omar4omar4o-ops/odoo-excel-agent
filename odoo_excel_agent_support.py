@@ -1,4 +1,4 @@
-﻿"""Shared helpers for the Odoo Excel agent UI and background watcher."""
+"""Shared helpers for the Odoo Excel agent UI and background watcher."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from link_odoo_vendor_bills import (
 
 APP_NAME = "Odoo Excel Agent"
 APP_DIR_NAME = "OdooExcelAgent"
-APP_VERSION = "2026.05.09.10"
+APP_VERSION = "2026.05.09.11"
 UI_WINDOW_TITLE = "Odoo Excel Agent Control Center"
 UI_SINGLETON_MUTEX_PREFIX = "Local\\OdooExcelAgentUi"
 DEFAULT_UPDATE_URL = "https://api.github.com/repos/omar4omar4o-ops/odoo-excel-agent/releases/latest"

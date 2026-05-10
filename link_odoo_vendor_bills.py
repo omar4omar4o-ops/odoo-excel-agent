@@ -172,11 +172,13 @@ GLOBAL_FAST_EXACT_FIELDS = {
     "account.move.line": ("ref", "move_name", "name", "invoice_origin", "matching_number"),
     "stock.picking": ("origin", "name", "carrier_tracking_ref"),
     "stock.move": ("origin", "reference", "name"),
+    "sale.order": ("client_order_ref", "name", "origin", "reference"),
     "ir.attachment": ("name", "display_name"),
 }
 GLOBAL_FAST_CONTAINS_FIELDS = {
     "account.move": ("ref", "payment_reference", "display_name", "invoice_origin"),
     "purchase.order": ("partner_ref", "name", "display_name", "origin"),
+    "sale.order": ("client_order_ref", "name", "display_name", "origin", "reference"),
     "ir.attachment": ("name", "display_name"),
     "stock.picking": ("origin", "name", "carrier_tracking_ref"),
 }
